@@ -9,6 +9,7 @@ library;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../domain/entities/live_close.dart';
 import '../../domain/entities/live_message.dart';
 import '../../domain/repositories/live_session_repository.dart';
 import '../../domain/repositories/live_settings_repository.dart';
@@ -27,10 +28,77 @@ const _validLanguages = {'es', 'en', 'fr', 'pt', 'it'};
 
 /// Reintentos automáticos cuando no se puede conectar con el backend.
 const int maxConnectionRetries = 3;
-const String retryingAnnouncement =
-    'No hay conexión con el servidor. Reintentando.';
-const String connectionFailedAnnouncement =
-    'No se pudo conectar con el servidor. Toca la pantalla para reintentar.';
+
+/// Avisos hablados cuando el asistente no puede hablar (sin conexión, sin cuota…).
+enum LiveNotice {
+  retrying,
+  connectionFailed,
+  sessionPaused,
+  quotaExceeded,
+  serverMisconfigured,
+}
+
+const Map<String, Map<LiveNotice, String>> _notices = {
+  'es': {
+    LiveNotice.retrying: 'Perdí la conexión con el servidor. Reintentando.',
+    LiveNotice.connectionFailed:
+        'No se pudo conectar con el servidor. Toca la pantalla para reintentar.',
+    LiveNotice.sessionPaused:
+        'La sesión se pausó por inactividad. Toca la pantalla para continuar.',
+    LiveNotice.quotaExceeded:
+        'El servicio del asistente no está disponible por ahora. Intenta más tarde.',
+    LiveNotice.serverMisconfigured:
+        'El servidor del asistente no está configurado. Avisa al equipo de soporte.',
+  },
+  'en': {
+    LiveNotice.retrying: 'I lost the connection to the server. Retrying.',
+    LiveNotice.connectionFailed:
+        'Could not connect to the server. Tap the screen to try again.',
+    LiveNotice.sessionPaused:
+        'The session was paused due to inactivity. Tap the screen to continue.',
+    LiveNotice.quotaExceeded:
+        'The assistant service is not available right now. Try again later.',
+    LiveNotice.serverMisconfigured:
+        'The assistant server is not configured. Please contact support.',
+  },
+  'fr': {
+    LiveNotice.retrying: 'J\'ai perdu la connexion au serveur. Nouvel essai.',
+    LiveNotice.connectionFailed:
+        'Connexion au serveur impossible. Touchez l\'écran pour réessayer.',
+    LiveNotice.sessionPaused:
+        'La session a été mise en pause. Touchez l\'écran pour continuer.',
+    LiveNotice.quotaExceeded:
+        'Le service de l\'assistant est indisponible. Réessayez plus tard.',
+    LiveNotice.serverMisconfigured:
+        'Le serveur de l\'assistant n\'est pas configuré. Contactez le support.',
+  },
+  'pt': {
+    LiveNotice.retrying: 'Perdi a conexão com o servidor. Tentando de novo.',
+    LiveNotice.connectionFailed:
+        'Não foi possível conectar ao servidor. Toque na tela para tentar de novo.',
+    LiveNotice.sessionPaused:
+        'A sessão foi pausada por inatividade. Toque na tela para continuar.',
+    LiveNotice.quotaExceeded:
+        'O serviço do assistente não está disponível agora. Tente mais tarde.',
+    LiveNotice.serverMisconfigured:
+        'O servidor do assistente não está configurado. Avise o suporte.',
+  },
+  'it': {
+    LiveNotice.retrying: 'Ho perso la connessione al server. Riprovo.',
+    LiveNotice.connectionFailed:
+        'Impossibile connettersi al server. Tocca lo schermo per riprovare.',
+    LiveNotice.sessionPaused:
+        'La sessione è in pausa per inattività. Tocca lo schermo per continuare.',
+    LiveNotice.quotaExceeded:
+        'Il servizio dell\'assistente non è disponibile ora. Riprova più tardi.',
+    LiveNotice.serverMisconfigured:
+        'Il server dell\'assistente non è configurato. Contatta l\'assistenza.',
+  },
+};
+
+/// Texto del aviso en el idioma de la persona (español si no está disponible).
+String noticeText(LiveNotice notice, String language) =>
+    (_notices[language] ?? _notices['es']!)[notice]!;
 
 enum LiveStatus { idle, connecting, connected, error }
 
@@ -161,11 +229,11 @@ class LiveController extends Notifier<LiveUiState> {
       verbosity: _settings.getVerbosity(),
       describing: _settings.getDescribing(),
       onResponse: _handleResponse,
-      onClose: () {
-        _log('[Lazarus] sesión cerrada');
+      onClose: (cause) {
+        _log('[Lazarus] sesión cerrada: ${cause.name}');
         if (!ref.mounted) return;
-        state = state.copyWith(status: LiveStatus.idle);
         _teardown();
+        _onSessionClosed(cause, lang);
       },
       onError: (e) {
         _log('[Lazarus] error de conexión: $e');
@@ -176,19 +244,50 @@ class LiveController extends Notifier<LiveUiState> {
     );
   }
 
+  void _announce(LiveNotice notice) =>
+      ref.read(announcerProvider)(noticeText(notice, state.language));
+
+  /// La sesión terminó sin que la app la cerrara: decide según la causa.
+  void _onSessionClosed(LiveCloseCause cause, String lang) {
+    // En silencio total no se reconecta (privacidad): se retoma al tocar.
+    if (state.micMuted) {
+      state = state.copyWith(status: LiveStatus.idle);
+      return;
+    }
+    switch (cause) {
+      case LiveCloseCause.upstreamEnded:
+        // Inactividad: se retoma cuando la persona vuelve a tocar la pantalla,
+        // con una confirmación corta en lugar de la presentación completa.
+        if (_everConnected) _pendingKickoff = _PendingKickoff.micOn;
+        state = state.copyWith(status: LiveStatus.idle);
+        _announce(LiveNotice.sessionPaused);
+      case LiveCloseCause.quotaExceeded:
+        state = state.copyWith(status: LiveStatus.error);
+        _announce(LiveNotice.quotaExceeded);
+      case LiveCloseCause.serverMisconfigured:
+        state = state.copyWith(status: LiveStatus.error);
+        _announce(LiveNotice.serverMisconfigured);
+      case LiveCloseCause.protocolError:
+        state = state.copyWith(status: LiveStatus.error);
+        _announce(LiveNotice.connectionFailed);
+      case LiveCloseCause.upstreamError:
+      case LiveCloseCause.unknown:
+        _retryOrFail(lang);
+    }
+  }
+
   /// Sin conexión con el backend: avisa y reintenta con espera creciente; al
   /// agotar los reintentos deja el estado de error (tocar la pantalla reintenta).
   void _retryOrFail(String lang) {
-    final announce = ref.read(announcerProvider);
     if (_retryAttempts >= maxConnectionRetries) {
       state = state.copyWith(status: LiveStatus.error);
-      announce(connectionFailedAnnouncement);
+      _announce(LiveNotice.connectionFailed);
       return;
     }
     final delay = ref.read(retryDelayProvider)(_retryAttempts);
     _retryAttempts++;
     state = state.copyWith(status: LiveStatus.connecting);
-    announce(retryingAnnouncement);
+    _announce(LiveNotice.retrying);
     // Si la sesión ya había funcionado, al volver basta una confirmación corta.
     if (_everConnected) _pendingKickoff = _PendingKickoff.micOn;
     Future.delayed(delay, () {
@@ -239,8 +338,11 @@ class LiveController extends Notifier<LiveUiState> {
     }
   }
 
+  /// Botón Detener: cierra la sesión; la próxima empieza con la presentación.
   void disconnect() {
     _teardown();
+    _everConnected = false;
+    _pendingKickoff = _PendingKickoff.intro;
     if (ref.mounted) state = state.copyWith(status: LiveStatus.idle);
   }
 

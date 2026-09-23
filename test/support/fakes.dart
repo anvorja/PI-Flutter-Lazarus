@@ -1,6 +1,7 @@
 /// Dobles de prueba de los contratos de `domain` (sin red, audio ni cámara).
 library;
 
+import 'package:app/features/live/domain/entities/live_close.dart';
 import 'package:app/features/live/domain/entities/live_message.dart';
 import 'package:app/features/live/domain/repositories/live_session_repository.dart';
 import 'package:app/features/live/domain/repositories/media_repository.dart';
@@ -11,7 +12,7 @@ class FakeLiveSessionRepository implements LiveSessionRepository {
   int micResumed = 0;
   final List<String> sentAudio = [];
   void Function(LiveResponse message)? _onResponse;
-  void Function()? _onClose;
+  void Function(LiveCloseCause cause)? _onClose;
   void Function(Object error)? _onError;
   bool _connected = false;
 
@@ -27,7 +28,7 @@ class FakeLiveSessionRepository implements LiveSessionRepository {
     String? verbosity,
     bool? describing,
     required void Function(LiveResponse message) onResponse,
-    required void Function() onClose,
+    required void Function(LiveCloseCause cause) onClose,
     required void Function(Object error) onError,
   }) {
     connectCalls++;
@@ -42,15 +43,19 @@ class FakeLiveSessionRepository implements LiveSessionRepository {
     const LiveResponse(type: LiveResponseType.setupComplete),
   );
 
+  /// Simula cualquier respuesta de Gemini (p. ej. un toolCall).
+  void emitResponse(LiveResponse response) => _onResponse?.call(response);
+
   /// Simula que el backend no está disponible o se cayó la conexión.
   void emitError([Object error = 'backend no disponible']) {
     _connected = false;
     _onError?.call(error);
   }
 
-  void emitClose() {
+  /// Simula que el backend cerró la sesión con una causa.
+  void emitClose(LiveCloseCause cause) {
     _connected = false;
-    _onClose?.call();
+    _onClose?.call(cause);
   }
 
   @override
