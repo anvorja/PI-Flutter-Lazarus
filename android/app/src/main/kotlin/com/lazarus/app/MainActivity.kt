@@ -22,7 +22,7 @@ class MainActivity : FlutterActivity() {
                     "isHeadsetConnected" -> {
                         val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
                         val devices = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-                        Log.d("CVAudio", "salidas: " + devices.joinToString { it.type.toString() })
+                        Log.d("LazarusAudio", "salidas: " + devices.joinToString { it.type.toString() })
                         val connected = devices.any { d ->
                             when (d.type) {
                                 AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
