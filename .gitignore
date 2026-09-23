@@ -1,6 +1,8 @@
 # Miscellaneous
 *.class
 *.lock
+# pubspec.lock sí se versiona: la app necesita builds reproducibles en CI.
+!pubspec.lock
 *.log
 *.pyc
 *.swp

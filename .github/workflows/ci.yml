@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop]
+
+permissions:
+  contents: read
+
+jobs:
+  calidad:
+    name: Formato, análisis, pruebas y build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar Java 17 (Gradle)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Instalar Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Dependencias
+        run: flutter pub get
+
+      - name: ¿La app ya está integrada?
+        id: app
+        run: |
+          if [ -f lib/main.dart ]; then echo "existe=true" >> "$GITHUB_OUTPUT"; else
+            echo "existe=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::lib/ aún no está integrada (entra con LAZA-30); se omiten análisis, pruebas y build."
+          fi
+
+      - name: Formato (dart format)
+        if: steps.app.outputs.existe == 'true'
+        run: dart format --output=none --set-exit-if-changed lib test
+
+      - name: Análisis estático (flutter analyze)
+        if: steps.app.outputs.existe == 'true'
+        run: flutter analyze
+
+      - name: Pruebas (flutter test)
+        if: steps.app.outputs.existe == 'true'
+        run: flutter test --coverage
+
+      - name: Build APK debug
+        if: steps.app.outputs.existe == 'true'
+        run: flutter build apk --debug --dart-define=BACKEND_URL=${{ vars.BACKEND_URL || 'http://localhost:8000' }}
+
+      - name: Publicar APK como artefacto
+        if: steps.app.outputs.existe == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: lazarus-apk-debug
+          path: build/app/outputs/flutter-apk/app-debug.apk
+          retention-days: 7
