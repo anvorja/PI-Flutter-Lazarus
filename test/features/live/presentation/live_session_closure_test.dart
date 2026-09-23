@@ -25,7 +25,7 @@ void main() {
         sharedPreferencesProvider.overrideWithValue(prefs),
         liveSessionRepositoryProvider.overrideWithValue(session),
         mediaRepositoryProvider.overrideWithValue(FakeMediaRepository()),
-        announcerProvider.overrideWithValue(announcements.add),
+        announcerProvider.overrideWithValue((m, _) => announcements.add(m)),
         retryDelayProvider.overrideWithValue((_) => Duration.zero),
       ],
     );
@@ -48,7 +48,7 @@ void main() {
   }
 
   test(
-    'inactividad: queda en pausa, avisa y al tocar retoma sin presentarse de nuevo',
+    'Gemini cierra la sesión: queda en pausa, avisa y al tocar retoma sin presentarse de nuevo',
     () async {
       await openSession();
 

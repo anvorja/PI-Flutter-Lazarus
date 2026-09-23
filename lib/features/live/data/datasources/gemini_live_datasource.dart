@@ -75,6 +75,17 @@ class GeminiLiveClient {
   bool connected = false;
   bool _closedByApp = false;
 
+  /// Ya se informó el fin de la conexión (error o cierre). Un fallo al conectar
+  /// llega por el stream y por `ready`; se informa una sola vez.
+  bool _ended = false;
+
+  void _reportError(Object error) {
+    connected = false;
+    if (_ended) return;
+    _ended = true;
+    _opts.onError?.call(error);
+  }
+
   void connect() {
     final channel = WebSocketChannel.connect(Uri.parse(_opts.url));
     _channel = channel;
@@ -89,14 +100,12 @@ class GeminiLiveClient {
         }
         _onMessage(event);
       },
-      onError: (Object error) {
-        connected = false;
-        _opts.onError?.call(error);
-      },
+      onError: _reportError,
       onDone: () {
         connected = false;
         // Si la app cerró la sesión (Detener, cambio de voz…) no es un corte.
-        if (_closedByApp) return;
+        if (_closedByApp || _ended) return;
+        _ended = true;
         _opts.onClose?.call(channel.closeCode);
       },
       cancelOnError: true,
@@ -113,8 +122,7 @@ class GeminiLiveClient {
           }
         })
         .catchError((Object error) {
-          connected = false;
-          _opts.onError?.call(error);
+          _reportError(error);
         });
   }
 
