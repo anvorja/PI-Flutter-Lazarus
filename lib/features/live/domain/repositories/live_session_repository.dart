@@ -6,6 +6,7 @@
 /// tocar la lógica de orquestación ni la UI.
 library;
 
+import '../entities/live_close.dart';
 import '../entities/live_message.dart';
 
 abstract class LiveSessionRepository {
@@ -13,6 +14,8 @@ abstract class LiveSessionRepository {
   bool get connected;
 
   /// Abre la sesión. Si ya hay una en curso, no hace nada (evita duplicados).
+  /// [onClose] solo se invoca cuando la sesión termina sin que la app la haya
+  /// cerrado (el botón Detener no lo dispara).
   void connect({
     required String language,
     String? voice,
@@ -21,7 +24,7 @@ abstract class LiveSessionRepository {
     String? verbosity,
     bool? describing,
     required void Function(LiveResponse message) onResponse,
-    required void Function() onClose,
+    required void Function(LiveCloseCause cause) onClose,
     required void Function(Object error) onError,
   });
 

@@ -61,7 +61,9 @@ class GeminiLiveClientOptions {
 
   final void Function(LiveResponse message)? onResponse;
   final void Function()? onOpen;
-  final void Function()? onClose;
+
+  /// Cierre no pedido por la app, con el código de cierre del backend.
+  final void Function(int? closeCode)? onClose;
   final void Function(Object error)? onError;
 }
 
@@ -71,6 +73,7 @@ class GeminiLiveClient {
   final GeminiLiveClientOptions _opts;
   WebSocketChannel? _channel;
   bool connected = false;
+  bool _closedByApp = false;
 
   void connect() {
     final channel = WebSocketChannel.connect(Uri.parse(_opts.url));
@@ -92,7 +95,9 @@ class GeminiLiveClient {
       },
       onDone: () {
         connected = false;
-        _opts.onClose?.call();
+        // Si la app cerró la sesión (Detener, cambio de voz…) no es un corte.
+        if (_closedByApp) return;
+        _opts.onClose?.call(channel.closeCode);
       },
       cancelOnError: true,
     );
@@ -114,6 +119,7 @@ class GeminiLiveClient {
   }
 
   void disconnect() {
+    _closedByApp = true;
     _channel?.sink.close(ws_status.normalClosure);
     _channel = null;
     connected = false;

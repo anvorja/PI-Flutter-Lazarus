@@ -7,6 +7,7 @@ library;
 
 import '../../../../core/config/app_config.dart';
 import '../../domain/entities/live_message.dart';
+import '../../domain/entities/live_close.dart';
 import '../../domain/repositories/live_session_repository.dart';
 import '../datasources/gemini_live_datasource.dart';
 
@@ -25,11 +26,12 @@ class LiveSessionRepositoryImpl implements LiveSessionRepository {
     String? verbosity,
     bool? describing,
     required void Function(LiveResponse message) onResponse,
-    required void Function() onClose,
+    required void Function(LiveCloseCause cause) onClose,
     required void Function(Object error) onError,
   }) {
     if (_client != null) return; // ya hay una sesión en curso
-    final client = GeminiLiveClient(
+    late final GeminiLiveClient client;
+    client = GeminiLiveClient(
       GeminiLiveClientOptions(
         url: liveWsUrl,
         language: language,
@@ -39,12 +41,13 @@ class LiveSessionRepositoryImpl implements LiveSessionRepository {
         verbosity: verbosity,
         describing: describing,
         onResponse: onResponse,
-        onClose: () {
-          _client = null;
-          onClose();
+        onClose: (code) {
+          // Solo olvida el cliente si sigue siendo el actual (no uno más nuevo).
+          if (identical(_client, client)) _client = null;
+          onClose(liveCloseCauseFromCode(code));
         },
         onError: (error) {
-          _client = null;
+          if (identical(_client, client)) _client = null;
           onError(error);
         },
       ),

@@ -80,8 +80,11 @@ void main() {
       await settle();
       expect(state().status, LiveStatus.error);
       expect(announcements, [
-        ...List.filled(maxConnectionRetries, retryingAnnouncement),
-        connectionFailedAnnouncement,
+        ...List.filled(
+          maxConnectionRetries,
+          noticeText(LiveNotice.retrying, 'es'),
+        ),
+        noticeText(LiveNotice.connectionFailed, 'es'),
       ]);
     },
   );
@@ -97,7 +100,7 @@ void main() {
     await settle();
 
     expect(state().status, LiveStatus.connected);
-    expect(announcements, [retryingAnnouncement]);
+    expect(announcements, [noticeText(LiveNotice.retrying, 'es')]);
   });
 
   test(
