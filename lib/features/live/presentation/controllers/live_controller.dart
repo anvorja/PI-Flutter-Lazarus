@@ -11,6 +11,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/entities/live_close.dart';
 import '../../domain/entities/live_message.dart';
+import '../../domain/entities/media_permission.dart';
 import '../../domain/repositories/live_session_repository.dart';
 import '../../domain/repositories/live_settings_repository.dart';
 import '../../domain/repositories/media_repository.dart';
@@ -36,6 +37,8 @@ enum LiveNotice {
   sessionPaused,
   quotaExceeded,
   serverMisconfigured,
+  permissionDenied,
+  permissionBlocked,
 }
 
 const Map<String, Map<LiveNotice, String>> _notices = {
@@ -49,6 +52,10 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'El servicio del asistente no está disponible por ahora. Intenta más tarde.',
     LiveNotice.serverMisconfigured:
         'El servidor del asistente no está configurado. Avisa al equipo de soporte.',
+    LiveNotice.permissionDenied:
+        'Necesito permiso de micrófono y cámara para acompañarte. Toca la pantalla para intentarlo de nuevo.',
+    LiveNotice.permissionBlocked:
+        'Los permisos de micrófono y cámara están desactivados. Toca la pantalla para abrir los ajustes y activarlos.',
   },
   'en': {
     LiveNotice.retrying: 'I lost the connection to the server. Retrying.',
@@ -60,6 +67,10 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'The assistant service is not available right now. Try again later.',
     LiveNotice.serverMisconfigured:
         'The assistant server is not configured. Please contact support.',
+    LiveNotice.permissionDenied:
+        'I need microphone and camera permission to help you. Tap the screen to try again.',
+    LiveNotice.permissionBlocked:
+        'Microphone and camera permissions are turned off. Tap the screen to open settings and turn them on.',
   },
   'fr': {
     LiveNotice.retrying: 'J\'ai perdu la connexion au serveur. Nouvel essai.',
@@ -71,6 +82,10 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Le service de l\'assistant est indisponible. Réessayez plus tard.',
     LiveNotice.serverMisconfigured:
         'Le serveur de l\'assistant n\'est pas configuré. Contactez le support.',
+    LiveNotice.permissionDenied:
+        'J\'ai besoin de l\'accès au micro et à la caméra pour vous accompagner. Touchez l\'écran pour réessayer.',
+    LiveNotice.permissionBlocked:
+        'L\'accès au micro et à la caméra est désactivé. Touchez l\'écran pour ouvrir les réglages et l\'activer.',
   },
   'pt': {
     LiveNotice.retrying: 'Perdi a conexão com o servidor. Tentando de novo.',
@@ -82,6 +97,10 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'O serviço do assistente não está disponível agora. Tente mais tarde.',
     LiveNotice.serverMisconfigured:
         'O servidor do assistente não está configurado. Avise o suporte.',
+    LiveNotice.permissionDenied:
+        'Preciso de permissão de microfone e câmera para te acompanhar. Toque na tela para tentar de novo.',
+    LiveNotice.permissionBlocked:
+        'As permissões de microfone e câmera estão desativadas. Toque na tela para abrir os ajustes e ativá-las.',
   },
   'it': {
     LiveNotice.retrying: 'Ho perso la connessione al server. Riprovo.',
@@ -93,6 +112,10 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Il servizio dell\'assistente non è disponibile ora. Riprova più tardi.',
     LiveNotice.serverMisconfigured:
         'Il server dell\'assistente non è configurato. Contatta l\'assistenza.',
+    LiveNotice.permissionDenied:
+        'Mi serve il permesso per microfono e fotocamera per accompagnarti. Tocca lo schermo per riprovare.',
+    LiveNotice.permissionBlocked:
+        'I permessi di microfono e fotocamera sono disattivati. Tocca lo schermo per aprire le impostazioni e attivarli.',
   },
 };
 
@@ -182,6 +205,7 @@ class LiveController extends Notifier<LiveUiState> {
   bool _audioDrained = false; // la cola de reproducción ya se vació
   _PendingKickoff _pendingKickoff = _PendingKickoff.intro;
   int _retryAttempts = 0; // reintentos de conexión consumidos
+  bool _openSettingsOnTap = false; // permisos bloqueados: el toque abre ajustes
   bool _everConnected = false; // hubo setupComplete en esta sesión de uso
 
   @override
@@ -190,7 +214,8 @@ class LiveController extends Notifier<LiveUiState> {
     _media = ref.read(mediaRepositoryProvider);
     _settings = ref.read(liveSettingsRepositoryProvider);
     ref.onDispose(_teardown);
-    return const LiveUiState();
+    // Español por defecto; si la persona cambió el idioma por voz, se conserva.
+    return LiveUiState(language: _settings.getLanguage());
   }
 
   void _teardown() {
@@ -203,11 +228,27 @@ class LiveController extends Notifier<LiveUiState> {
   Future<void> connect() async {
     if (state.isLive) return;
     _retryAttempts = 0;
-    final granted = await _media.requestPermissions();
-    if (!ref.mounted) return;
-    if (!granted) {
-      state = state.copyWith(status: LiveStatus.error);
+    // Permisos negados de forma permanente: el toque abre los ajustes; al
+    // volver, el siguiente toque los pide de nuevo.
+    if (_openSettingsOnTap) {
+      _openSettingsOnTap = false;
+      await _media.openPermissionSettings();
       return;
+    }
+    final permission = await _media.requestPermissions();
+    if (!ref.mounted) return;
+    switch (permission) {
+      case MediaPermission.granted:
+        break;
+      case MediaPermission.denied:
+        state = state.copyWith(status: LiveStatus.error);
+        _announce(LiveNotice.permissionDenied);
+        return;
+      case MediaPermission.blocked:
+        _openSettingsOnTap = true;
+        state = state.copyWith(status: LiveStatus.error);
+        _announce(LiveNotice.permissionBlocked);
+        return;
     }
     _openSession(state.language);
   }
@@ -291,9 +332,11 @@ class LiveController extends Notifier<LiveUiState> {
       return;
     }
     final delay = ref.read(retryDelayProvider)(_retryAttempts);
+    // Se avisa solo en el primer reintento: la frase dura más que la espera
+    // entre intentos y cada aviso nuevo cortaría el anterior a la mitad.
+    if (_retryAttempts == 0) _announce(LiveNotice.retrying);
     _retryAttempts++;
     state = state.copyWith(status: LiveStatus.connecting);
-    _announce(LiveNotice.retrying);
     // Si la sesión ya había funcionado, al volver basta una confirmación corta.
     if (_everConnected) _pendingKickoff = _PendingKickoff.micOn;
     Future.delayed(delay, () {
@@ -425,7 +468,12 @@ class LiveController extends Notifier<LiveUiState> {
         _log('[Lazarus] INTERRUMPIDO (barge-in: el usuario habló encima)');
         _assistantActive = false;
         _assistantTurnDone = false;
-        _media.interruptPlayback();
+        final stopwatch = Stopwatch()..start();
+        _media.interruptPlayback().then((_) {
+          _log(
+            '[Lazarus] reproducción detenida en ${stopwatch.elapsedMilliseconds} ms',
+          );
+        });
       case LiveResponseType.turnComplete:
         // El asistente terminó de generar; el audio aún puede estar drenando.
         // El mic se reabrirá cuando la cola se vacíe (onDrained). Si el
@@ -465,7 +513,10 @@ class LiveController extends Notifier<LiveUiState> {
           }
         case 'set_language':
           final lang = (call.args['language'] ?? '').toString();
-          if (_validLanguages.contains(lang)) reconnectLang = lang;
+          if (_validLanguages.contains(lang)) {
+            reconnectLang = lang;
+            _settings.setLanguage(lang);
+          }
         case 'set_verbosity':
           final level = (call.args['level'] ?? '').toString();
           if (level == 'concise' || level == 'detailed') {

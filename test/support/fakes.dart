@@ -3,6 +3,7 @@ library;
 
 import 'package:app/features/live/domain/entities/live_close.dart';
 import 'package:app/features/live/domain/entities/live_message.dart';
+import 'package:app/features/live/domain/entities/media_permission.dart';
 import 'package:app/features/live/domain/repositories/live_session_repository.dart';
 import 'package:app/features/live/domain/repositories/media_repository.dart';
 
@@ -81,14 +82,19 @@ class FakeLiveSessionRepository implements LiveSessionRepository {
 }
 
 class FakeMediaRepository implements MediaRepository {
-  FakeMediaRepository({this.permissionsGranted = true});
+  FakeMediaRepository({this.permission = MediaPermission.granted});
 
-  final bool permissionsGranted;
+  MediaPermission permission;
+  int settingsOpened = 0;
+  int interruptions = 0;
   bool micStarted = false;
   bool cameraStarted = false;
 
   @override
-  Future<bool> requestPermissions() async => permissionsGranted;
+  Future<MediaPermission> requestPermissions() async => permission;
+
+  @override
+  Future<void> openPermissionSettings() async => settingsOpened++;
 
   @override
   Future<bool> isHeadsetConnected() async => false;
@@ -116,7 +122,7 @@ class FakeMediaRepository implements MediaRepository {
   Future<void> playAudio(String base64Pcm) async {}
 
   @override
-  void interruptPlayback() {}
+  Future<void> interruptPlayback() async => interruptions++;
 
   @override
   Future<void> destroyPlayer() async {}

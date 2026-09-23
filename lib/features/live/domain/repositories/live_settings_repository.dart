@@ -13,6 +13,10 @@ abstract class LiveSettingsRepository {
   String getUserName();
   Future<void> setUserName(String name);
 
+  /// Idioma de la sesión (`es` por defecto). Solo cambia por comando de voz.
+  String getLanguage();
+  Future<void> setLanguage(String language);
+
   /// Voz elegida (vacío = el backend usa su voz por defecto).
   String getVoice();
   Future<void> setVoice(String voice);

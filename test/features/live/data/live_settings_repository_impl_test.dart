@@ -13,6 +13,7 @@ void main() {
   test('valores por defecto sin ajustes guardados', () async {
     final r = await repo();
     expect(r.getAssistantName(), defaultAssistantName);
+    expect(r.getLanguage(), 'es');
     expect(r.getUserName(), isEmpty);
     expect(r.getVoice(), isEmpty);
     expect(r.getVerbosity(), 'concise');
@@ -25,6 +26,7 @@ void main() {
     await r.setAssistantName('Sol');
     await r.setUserName('Andrés');
     await r.setVoice('Kore');
+    await r.setLanguage('en');
     await r.setVerbosity('detailed');
     await r.setDescribing(false);
 
@@ -34,6 +36,7 @@ void main() {
     expect(again.getAssistantName(), 'Sol');
     expect(again.getUserName(), 'Andrés');
     expect(again.getVoice(), 'Kore');
+    expect(again.getLanguage(), 'en');
     expect(again.getVerbosity(), 'detailed');
     expect(again.getDescribing(), isFalse);
   });
@@ -42,7 +45,9 @@ void main() {
     final r = await repo();
     await r.setAssistantName('   ');
     await r.setVoice('VozInventada');
+    await r.setLanguage('de');
     expect(r.getAssistantName(), defaultAssistantName);
     expect(r.getVoice(), isEmpty);
+    expect(r.getLanguage(), 'es');
   });
 }
