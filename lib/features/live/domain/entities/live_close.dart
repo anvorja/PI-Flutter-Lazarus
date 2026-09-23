@@ -3,7 +3,7 @@
 library;
 
 enum LiveCloseCause {
-  /// Gemini terminó la sesión de forma ordenada (p. ej. por inactividad).
+  /// Gemini terminó la sesión de forma ordenada (p. ej. al llegar al límite de duración).
   upstreamEnded,
 
   /// Falló la red o la conexión con Gemini.

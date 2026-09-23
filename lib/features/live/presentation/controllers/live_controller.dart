@@ -44,7 +44,7 @@ const Map<String, Map<LiveNotice, String>> _notices = {
     LiveNotice.connectionFailed:
         'No se pudo conectar con el servidor. Toca la pantalla para reintentar.',
     LiveNotice.sessionPaused:
-        'La sesión se pausó por inactividad. Toca la pantalla para continuar.',
+        'La sesión con el asistente terminó. Toca la pantalla para continuar.',
     LiveNotice.quotaExceeded:
         'El servicio del asistente no está disponible por ahora. Intenta más tarde.',
     LiveNotice.serverMisconfigured:
@@ -55,7 +55,7 @@ const Map<String, Map<LiveNotice, String>> _notices = {
     LiveNotice.connectionFailed:
         'Could not connect to the server. Tap the screen to try again.',
     LiveNotice.sessionPaused:
-        'The session was paused due to inactivity. Tap the screen to continue.',
+        'The session with the assistant ended. Tap the screen to continue.',
     LiveNotice.quotaExceeded:
         'The assistant service is not available right now. Try again later.',
     LiveNotice.serverMisconfigured:
@@ -66,7 +66,7 @@ const Map<String, Map<LiveNotice, String>> _notices = {
     LiveNotice.connectionFailed:
         'Connexion au serveur impossible. Touchez l\'écran pour réessayer.',
     LiveNotice.sessionPaused:
-        'La session a été mise en pause. Touchez l\'écran pour continuer.',
+        'La session avec l\'assistant est terminée. Touchez l\'écran pour continuer.',
     LiveNotice.quotaExceeded:
         'Le service de l\'assistant est indisponible. Réessayez plus tard.',
     LiveNotice.serverMisconfigured:
@@ -77,7 +77,7 @@ const Map<String, Map<LiveNotice, String>> _notices = {
     LiveNotice.connectionFailed:
         'Não foi possível conectar ao servidor. Toque na tela para tentar de novo.',
     LiveNotice.sessionPaused:
-        'A sessão foi pausada por inatividade. Toque na tela para continuar.',
+        'A sessão com o assistente terminou. Toque na tela para continuar.',
     LiveNotice.quotaExceeded:
         'O serviço do assistente não está disponível agora. Tente mais tarde.',
     LiveNotice.serverMisconfigured:
@@ -88,7 +88,7 @@ const Map<String, Map<LiveNotice, String>> _notices = {
     LiveNotice.connectionFailed:
         'Impossibile connettersi al server. Tocca lo schermo per riprovare.',
     LiveNotice.sessionPaused:
-        'La sessione è in pausa per inattività. Tocca lo schermo per continuare.',
+        'La sessione con l\'assistente è terminata. Tocca lo schermo per continuare.',
     LiveNotice.quotaExceeded:
         'Il servizio dell\'assistente non è disponibile ora. Riprova più tardi.',
     LiveNotice.serverMisconfigured:
@@ -244,8 +244,13 @@ class LiveController extends Notifier<LiveUiState> {
     );
   }
 
-  void _announce(LiveNotice notice) =>
-      ref.read(announcerProvider)(noticeText(notice, state.language));
+  void _announce(LiveNotice notice) {
+    _log('[Lazarus] aviso: ${notice.name}');
+    ref.read(announcerProvider)(
+      noticeText(notice, state.language),
+      state.language,
+    );
+  }
 
   /// La sesión terminó sin que la app la cerrara: decide según la causa.
   void _onSessionClosed(LiveCloseCause cause, String lang) {
@@ -256,8 +261,9 @@ class LiveController extends Notifier<LiveUiState> {
     }
     switch (cause) {
       case LiveCloseCause.upstreamEnded:
-        // Inactividad: se retoma cuando la persona vuelve a tocar la pantalla,
-        // con una confirmación corta en lugar de la presentación completa.
+        // Gemini cerró la sesión (p. ej. límite de duración): se retoma cuando la
+        // persona vuelve a tocar la pantalla, con una confirmación corta en lugar
+        // de la presentación completa.
         if (_everConnected) _pendingKickoff = _PendingKickoff.micOn;
         state = state.copyWith(status: LiveStatus.idle);
         _announce(LiveNotice.sessionPaused);

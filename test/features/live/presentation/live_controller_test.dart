@@ -23,7 +23,7 @@ void main() {
         sharedPreferencesProvider.overrideWithValue(prefs),
         liveSessionRepositoryProvider.overrideWithValue(session),
         mediaRepositoryProvider.overrideWithValue(media),
-        announcerProvider.overrideWithValue(announcements.add),
+        announcerProvider.overrideWithValue((m, _) => announcements.add(m)),
         retryDelayProvider.overrideWithValue((_) => Duration.zero),
       ],
     );
