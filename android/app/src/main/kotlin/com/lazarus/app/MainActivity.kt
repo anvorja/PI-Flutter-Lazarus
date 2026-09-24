@@ -29,7 +29,14 @@ class MainActivity : FlutterActivity() {
                                 AudioDeviceInfo.TYPE_WIRED_HEADSET,
                                 AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
                                 AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+                                // Audífonos médicos (Android 9+) y audífonos BLE Audio
+                                // (Android 12+): en versiones anteriores estas
+                                // constantes nunca aparecen, así que no afectan.
+                                AudioDeviceInfo.TYPE_HEARING_AID,
+                                AudioDeviceInfo.TYPE_BLE_HEADSET,
                                 AudioDeviceInfo.TYPE_USB_HEADSET -> true
+                                // TYPE_USB_DEVICE no cuenta: el cable de depuración
+                                // lo simula y daría un falso positivo.
                                 else -> false
                             }
                         }

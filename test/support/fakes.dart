@@ -94,10 +94,14 @@ class FakeMediaRepository implements MediaRepository {
   FakeMediaRepository({
     this.permission = MediaPermission.granted,
     this.cameraGranted = true,
+    this.headset = false,
   });
 
   MediaPermission permission;
   bool cameraGranted;
+  bool headset;
+  void Function(String base64Pcm)? onMicChunk;
+  void Function()? onDrained;
   void Function(String base64Jpeg)? onFrame;
   int settingsOpened = 0;
   int interruptions = 0;
@@ -112,11 +116,13 @@ class FakeMediaRepository implements MediaRepository {
   Future<void> openPermissionSettings() async => settingsOpened++;
 
   @override
-  Future<bool> isHeadsetConnected() async => false;
+  Future<bool> isHeadsetConnected() async => headset;
 
   @override
-  Future<void> startMic(void Function(String base64Pcm) onChunk) async =>
-      micStarted = true;
+  Future<void> startMic(void Function(String base64Pcm) onChunk) async {
+    micStarted = true;
+    onMicChunk = onChunk;
+  }
 
   @override
   Future<void> stopMic() async => micStarted = false;
@@ -134,7 +140,8 @@ class FakeMediaRepository implements MediaRepository {
   Future<void> stopCamera() async => cameraStarted = false;
 
   @override
-  Future<void> initPlayer(void Function() onDrained) async {}
+  Future<void> initPlayer(void Function() onDrained) async =>
+      this.onDrained = onDrained;
 
   @override
   Future<void> playAudio(String base64Pcm) async {}

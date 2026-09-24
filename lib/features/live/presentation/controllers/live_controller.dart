@@ -6,6 +6,8 @@
 /// no conoce WebSockets, audio nativo ni cámara.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -215,6 +217,12 @@ class LiveController extends Notifier<LiveUiState> {
   final StringBuffer _assistantSaid = StringBuffer();
   bool _assistantTurnDone = false; // terminó el turno (audio puede drenar)
   bool _audioDrained = false; // la cola de reproducción ya se vació
+
+  /// Audio del asistente encolado desde que la cola se vació por última vez (ms
+  /// estimados). Sirve de red de seguridad: si Android nunca avisa que el audio
+  /// terminó, el micrófono se reabre por tiempo para que la app no quede sorda.
+  int _queuedAudioMs = 0;
+  Timer? _drainFallback;
   _PendingKickoff _pendingKickoff = _PendingKickoff.intro;
   int _retryAttempts = 0; // reintentos de conexión consumidos
   bool _openSettingsOnTap = false; // permisos bloqueados: el toque abre ajustes
@@ -232,6 +240,7 @@ class LiveController extends Notifier<LiveUiState> {
   }
 
   void _teardown() {
+    _drainFallback?.cancel();
     _media.stopMic();
     _media.stopCamera();
     _media.destroyPlayer();
@@ -379,7 +388,8 @@ class LiveController extends Notifier<LiveUiState> {
 
       await _media.initPlayer(() {
         _audioDrained = true;
-        if (_assistantTurnDone) _assistantActive = false;
+        _queuedAudioMs = 0;
+        _reopenMicIfTurnOver('fin del audio y turnComplete');
       });
 
       _micChunks = 0;
@@ -487,12 +497,18 @@ class LiveController extends Notifier<LiveUiState> {
         _assistantActive = true;
         _assistantTurnDone = false;
         _audioDrained = false;
-        _media.playAudio(message.data as String);
+        _drainFallback?.cancel();
+        final pcm = message.data as String;
+        // base64 → bytes (×3/4) → muestras de 16 bits (÷2) → ms a 24 kHz (÷24).
+        _queuedAudioMs += pcm.length * 3 ~/ 4 ~/ 48;
+        _media.playAudio(pcm);
       case LiveResponseType.interrupted:
         _logAssistantSaid(interrupted: true);
         _log('[Lazarus] INTERRUMPIDO (barge-in: el usuario habló encima)');
         _assistantActive = false;
         _assistantTurnDone = false;
+        _drainFallback?.cancel();
+        _queuedAudioMs = 0;
         final stopwatch = Stopwatch()..start();
         _media.interruptPlayback().then((_) {
           _log(
@@ -506,11 +522,29 @@ class LiveController extends Notifier<LiveUiState> {
         // drenado llegó primero (respuesta corta), reabre ya mismo.
         _log('[Lazarus] turnComplete (asistente terminó su turno)');
         _assistantTurnDone = true;
-        if (_audioDrained) _assistantActive = false;
+        if (_audioDrained) {
+          _reopenMicIfTurnOver('turnComplete tras el fin del audio');
+        } else if (_assistantActive) {
+          _drainFallback?.cancel();
+          _drainFallback = Timer(
+            Duration(milliseconds: _queuedAudioMs) +
+                ref.read(drainFallbackMarginProvider),
+            () => _reopenMicIfTurnOver('por tiempo: no llegó el fin del audio'),
+          );
+        }
       case LiveResponseType.text:
       case LiveResponseType.unknown:
         break;
     }
+  }
+
+  /// Medio-dúplex: el micrófono se reabre cuando el audio terminó **y** llegó
+  /// `turnComplete`, en cualquier orden.
+  void _reopenMicIfTurnOver(String reason) {
+    if (!_assistantActive || !_assistantTurnDone) return;
+    _drainFallback?.cancel();
+    _assistantActive = false;
+    if (_onSpeaker) _log('[Lazarus] mic: reabierto ($reason)');
   }
 
   void _logAssistantSaid({bool interrupted = false}) {
