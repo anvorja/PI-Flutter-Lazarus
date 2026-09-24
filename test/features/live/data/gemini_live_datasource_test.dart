@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -26,5 +28,34 @@ void main() {
 
     expect(errors, hasLength(1));
     expect(closes, isEmpty);
+  });
+
+  test('sin permiso de cámara el frame start pide modo solo audio', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    final firstFrame = Completer<Map<String, dynamic>>();
+    server.listen((request) async {
+      final socket = await WebSocketTransformer.upgrade(request);
+      socket.listen((data) {
+        if (!firstFrame.isCompleted) {
+          firstFrame.complete(
+            jsonDecode(data as String) as Map<String, dynamic>,
+          );
+        }
+      });
+    });
+
+    final client = GeminiLiveClient(
+      GeminiLiveClientOptions(
+        url: 'ws://127.0.0.1:${server.port}/ws/live',
+        language: 'es',
+        camera: false,
+      ),
+    )..connect();
+    addTearDown(client.disconnect);
+
+    final start = await firstFrame.future.timeout(const Duration(seconds: 2));
+    expect(start['type'], 'start');
+    expect(start['camera'], isFalse);
   });
 }

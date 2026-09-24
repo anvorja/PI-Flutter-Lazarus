@@ -11,7 +11,7 @@ import '../entities/media_permission.dart';
 
 abstract class MediaRepository {
   /// Pide permisos de micrófono y cámara.
-  Future<MediaPermission> requestPermissions();
+  Future<MediaAccess> requestPermissions();
 
   /// Abre los ajustes de la app (permisos negados de forma permanente).
   Future<void> openPermissionSettings();

@@ -25,6 +25,7 @@ class LiveSessionRepositoryImpl implements LiveSessionRepository {
     String? userName,
     String? verbosity,
     bool? describing,
+    bool camera = true,
     required void Function(LiveResponse message) onResponse,
     required void Function(LiveCloseCause cause) onClose,
     required void Function(Object error) onError,
@@ -40,6 +41,7 @@ class LiveSessionRepositoryImpl implements LiveSessionRepository {
         userName: userName,
         verbosity: verbosity,
         describing: describing,
+        camera: camera,
         onResponse: onResponse,
         onClose: (code) {
           // Solo olvida el cliente si sigue siendo el actual (no uno más nuevo).
@@ -79,6 +81,7 @@ class LiveSessionRepositoryImpl implements LiveSessionRepository {
   void sendMicResumed() => _client?.sendMicResumed();
 
   @override
-  void sendToolResponse(List<({String id, String name})> calls) =>
-      _client?.sendToolResponse(calls);
+  void sendToolResponse(
+    List<({String id, String name, String result})> calls,
+  ) => _client?.sendToolResponse(calls);
 }

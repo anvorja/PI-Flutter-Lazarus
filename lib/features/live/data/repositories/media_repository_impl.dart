@@ -18,15 +18,16 @@ class MediaRepositoryImpl implements MediaRepository {
   VideoStreamer? _videoStreamer;
 
   @override
-  Future<MediaPermission> requestPermissions() async {
+  Future<MediaAccess> requestPermissions() async {
     final statuses = await [Permission.microphone, Permission.camera].request();
-    if (statuses.values.every((s) => s.isGranted)) {
-      return MediaPermission.granted;
-    }
-    if (statuses.values.any((s) => s.isPermanentlyDenied)) {
-      return MediaPermission.blocked;
-    }
-    return MediaPermission.denied;
+    final mic = statuses[Permission.microphone];
+    final microphone = mic != null && mic.isGranted
+        ? MediaPermission.granted
+        : (mic != null && mic.isPermanentlyDenied)
+        ? MediaPermission.blocked
+        : MediaPermission.denied;
+    final camera = statuses[Permission.camera]?.isGranted ?? false;
+    return (microphone: microphone, camera: camera);
   }
 
   @override

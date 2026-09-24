@@ -23,6 +23,9 @@ abstract class LiveSessionRepository {
     String? userName,
     String? verbosity,
     bool? describing,
+
+    /// `false` = sin permiso de cámara: el asistente trabaja solo con audio.
+    bool camera = true,
     required void Function(LiveResponse message) onResponse,
     required void Function(LiveCloseCause cause) onClose,
     required void Function(Object error) onError,
@@ -45,6 +48,8 @@ abstract class LiveSessionRepository {
   /// Tras reactivar el micrófono (salir de silencio total): pide confirmación.
   void sendMicResumed();
 
-  /// Responde a las funciones que pidió el asistente (toolCall).
-  void sendToolResponse(List<({String id, String name})> calls);
+  /// Responde a las funciones que pidió el asistente (toolCall). [result] le dice
+  /// si se aplicó (`ok`) o por qué no, para que el asistente se lo explique a la
+  /// persona con su propia voz.
+  void sendToolResponse(List<({String id, String name, String result})> calls);
 }
