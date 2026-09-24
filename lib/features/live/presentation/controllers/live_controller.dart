@@ -48,6 +48,7 @@ enum LiveNotice {
   serverMisconfigured,
   permissionDenied,
   permissionBlocked,
+  stopped,
 }
 
 const Map<String, Map<LiveNotice, String>> _notices = {
@@ -65,6 +66,7 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Necesito permiso de micrófono para acompañarte. Toca la pantalla para intentarlo de nuevo.',
     LiveNotice.permissionBlocked:
         'El permiso de micrófono está desactivado. Toca la pantalla para abrir los ajustes y activarlo.',
+    LiveNotice.stopped: 'Asistente detenido.',
   },
   'en': {
     LiveNotice.retrying: 'I lost the connection to the server. Retrying.',
@@ -80,6 +82,7 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'I need microphone permission to help you. Tap the screen to try again.',
     LiveNotice.permissionBlocked:
         'Microphone permission is turned off. Tap the screen to open settings and turn it on.',
+    LiveNotice.stopped: 'Assistant stopped.',
   },
   'fr': {
     LiveNotice.retrying: 'J\'ai perdu la connexion au serveur. Nouvel essai.',
@@ -95,6 +98,7 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'J\'ai besoin de l\'accès au micro pour vous accompagner. Touchez l\'écran pour réessayer.',
     LiveNotice.permissionBlocked:
         'L\'accès au micro est désactivé. Touchez l\'écran pour ouvrir les réglages et l\'activer.',
+    LiveNotice.stopped: 'Assistant arrêté.',
   },
   'pt': {
     LiveNotice.retrying: 'Perdi a conexão com o servidor. Tentando de novo.',
@@ -110,6 +114,7 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Preciso de permissão de microfone para te acompanhar. Toque na tela para tentar de novo.',
     LiveNotice.permissionBlocked:
         'A permissão de microfone está desativada. Toque na tela para abrir os ajustes e ativá-la.',
+    LiveNotice.stopped: 'Assistente parado.',
   },
   'it': {
     LiveNotice.retrying: 'Ho perso la connessione al server. Riprovo.',
@@ -125,6 +130,7 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Mi serve il permesso del microfono per accompagnarti. Tocca lo schermo per riprovare.',
     LiveNotice.permissionBlocked:
         'Il permesso del microfono è disattivato. Tocca lo schermo per aprire le impostazioni e attivarlo.',
+    LiveNotice.stopped: 'Assistente fermato.',
   },
 };
 
@@ -421,11 +427,15 @@ class LiveController extends Notifier<LiveUiState> {
   }
 
   /// Botón Detener: cierra la sesión; la próxima empieza con la presentación.
+  /// Botón Detener: cierra la sesión, libera micrófono y cámara y avisa con una
+  /// frase corta (sin reconectar).
   void disconnect() {
     _teardown();
     _everConnected = false;
     _pendingKickoff = _PendingKickoff.intro;
-    if (ref.mounted) state = state.copyWith(status: LiveStatus.idle);
+    if (!ref.mounted) return;
+    state = state.copyWith(status: LiveStatus.idle);
+    _announce(LiveNotice.stopped);
   }
 
   /// Toque en pantalla: si está en silencio total, reactiva el micrófono; si
