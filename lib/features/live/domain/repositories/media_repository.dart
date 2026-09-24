@@ -7,9 +7,14 @@
 /// concretas dentro de `data/datasources`.
 library;
 
+import '../entities/media_permission.dart';
+
 abstract class MediaRepository {
-  /// Pide permisos de micrófono y cámara. `true` si ambos fueron concedidos.
-  Future<bool> requestPermissions();
+  /// Pide permisos de micrófono y cámara.
+  Future<MediaPermission> requestPermissions();
+
+  /// Abre los ajustes de la app (permisos negados de forma permanente).
+  Future<void> openPermissionSettings();
 
   /// `true` si hay audífonos/auriculares conectados (define full-duplex vs
   /// medio-dúplex).
@@ -29,8 +34,8 @@ abstract class MediaRepository {
   Future<void> playAudio(String base64Pcm);
 
   /// Vacía la cola de reproducción (barge-in: el usuario interrumpió al
-  /// asistente).
-  void interruptPlayback();
+  /// asistente). Termina cuando el audio pendiente ya se descartó.
+  Future<void> interruptPlayback();
 
   Future<void> destroyPlayer();
 }

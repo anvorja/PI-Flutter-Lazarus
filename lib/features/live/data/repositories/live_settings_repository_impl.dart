@@ -11,12 +11,17 @@ import '../../domain/repositories/live_settings_repository.dart';
 
 const String _nameKey = 'lazarus_assistant_name';
 const String _userNameKey = 'lazarus_user_name';
+const String _languageKey = 'lazarus_language';
 const String _voiceKey = 'lazarus_voice';
 const String _verbosityKey = 'lazarus_verbosity';
 const String _describingKey = 'lazarus_describing';
 const String _cuesMutedKey = 'lazarus_system_cues_muted';
 
 const String defaultAssistantName = 'Aria';
+
+/// Idiomas de la app (deben coincidir con los del backend). Español por defecto.
+const Set<String> liveLanguages = {'es', 'en', 'fr', 'pt', 'it'};
+const String defaultLanguage = 'es';
 
 /// Voces prebuilt de Gemini Live disponibles (deben coincidir con el enum del
 /// backend en `live_service.set_voice`). Vacío = voz por defecto del backend.
@@ -55,6 +60,19 @@ class LiveSettingsRepositoryImpl implements LiveSettingsRepository {
   Future<void> setUserName(String name) async {
     final value = name.trim();
     if (value.isNotEmpty) await _prefs.setString(_userNameKey, value);
+  }
+
+  @override
+  String getLanguage() {
+    final stored = _prefs.getString(_languageKey);
+    return liveLanguages.contains(stored) ? stored! : defaultLanguage;
+  }
+
+  @override
+  Future<void> setLanguage(String language) async {
+    if (liveLanguages.contains(language)) {
+      await _prefs.setString(_languageKey, language);
+    }
   }
 
   @override

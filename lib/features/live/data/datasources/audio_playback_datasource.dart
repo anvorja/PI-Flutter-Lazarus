@@ -10,8 +10,9 @@
 library;
 
 import 'dart:convert';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_pcm_sound/flutter_pcm_sound.dart';
 
 class AudioPlayer {
@@ -24,6 +25,7 @@ class AudioPlayer {
   final void Function()? onDrained;
 
   bool _initialized = false;
+  bool _destroyed = false; // tras cerrar la sesión no se vuelve a inicializar
   Future<void>? _resetting;
 
   Future<void> init() async {
@@ -41,36 +43,60 @@ class AudioPlayer {
 
   /// Encola un chunk de audio (base64 PCM 24 kHz) para reproducción inmediata.
   Future<void> play(String base64Pcm) async {
+    if (_destroyed) return;
     if (!_initialized) await init();
     // Espera a que termine un posible reinicio por interrupción en curso.
     if (_resetting != null) await _resetting;
+    // La sesión pudo cerrarse mientras tanto: no se alimenta un motor liberado.
+    if (!_initialized) return;
     final Uint8List bytes = base64Decode(base64Pcm);
-    await FlutterPcmSound.feed(
-      PcmArrayInt16(
-        bytes: bytes.buffer.asByteData(
-          bytes.offsetInBytes,
-          bytes.lengthInBytes,
+    await _guard(
+      'feed',
+      () => FlutterPcmSound.feed(
+        PcmArrayInt16(
+          bytes: bytes.buffer.asByteData(
+            bytes.offsetInBytes,
+            bytes.lengthInBytes,
+          ),
         ),
       ),
     );
   }
 
   /// Vacía la cola de reproducción (cuando Gemini es interrumpido). Reinicia el
-  /// motor para descartar el audio aún sin reproducir.
-  void interrupt() {
-    if (!_initialized) return;
-    _resetting = _reset();
+  /// motor para descartar el audio aún sin reproducir; termina cuando el audio
+  /// pendiente ya se descartó.
+  Future<void> interrupt() {
+    if (!_initialized) return Future.value();
+    return _resetting ??= _reset();
   }
 
   Future<void> _reset() async {
-    await FlutterPcmSound.release();
-    await FlutterPcmSound.setup(sampleRate: sampleRate, channelCount: 1);
+    await _guard('release', FlutterPcmSound.release);
+    if (_initialized) {
+      await _guard(
+        'setup',
+        () => FlutterPcmSound.setup(sampleRate: sampleRate, channelCount: 1),
+      );
+    }
     _resetting = null;
   }
 
   Future<void> destroy() async {
+    _destroyed = true;
     if (!_initialized) return;
     _initialized = false;
-    await FlutterPcmSound.release();
+    if (_resetting != null) await _resetting;
+    await _guard('release', FlutterPcmSound.release);
+  }
+
+  /// El motor nativo puede estar ya liberado (cierre durante una interrupción o
+  /// un chunk tardío); el error se registra y no rompe el cierre de la sesión.
+  Future<void> _guard(String op, Future<void> Function() call) async {
+    try {
+      await call();
+    } on PlatformException catch (e) {
+      debugPrint('[Lazarus] reproductor ($op): ${e.message}');
+    }
   }
 }

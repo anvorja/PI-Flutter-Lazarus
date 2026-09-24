@@ -5,6 +5,7 @@ library;
 
 import 'package:permission_handler/permission_handler.dart';
 
+import '../../domain/entities/media_permission.dart';
 import '../../domain/repositories/media_repository.dart';
 import '../datasources/audio_capture_datasource.dart';
 import '../datasources/audio_playback_datasource.dart';
@@ -17,10 +18,19 @@ class MediaRepositoryImpl implements MediaRepository {
   VideoStreamer? _videoStreamer;
 
   @override
-  Future<bool> requestPermissions() async {
+  Future<MediaPermission> requestPermissions() async {
     final statuses = await [Permission.microphone, Permission.camera].request();
-    return statuses.values.every((s) => s.isGranted);
+    if (statuses.values.every((s) => s.isGranted)) {
+      return MediaPermission.granted;
+    }
+    if (statuses.values.any((s) => s.isPermanentlyDenied)) {
+      return MediaPermission.blocked;
+    }
+    return MediaPermission.denied;
   }
+
+  @override
+  Future<void> openPermissionSettings() => openAppSettings();
 
   @override
   Future<bool> isHeadsetConnected() => audio_route.isHeadsetConnected();
@@ -69,7 +79,7 @@ class MediaRepositoryImpl implements MediaRepository {
   }
 
   @override
-  void interruptPlayback() => _audioPlayer?.interrupt();
+  Future<void> interruptPlayback() async => _audioPlayer?.interrupt();
 
   @override
   Future<void> destroyPlayer() async {
