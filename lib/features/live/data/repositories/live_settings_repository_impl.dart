@@ -19,23 +19,6 @@ const String _cuesMutedKey = 'lazarus_system_cues_muted';
 
 const String defaultAssistantName = 'Aria';
 
-/// Idiomas de la app (deben coincidir con los del backend). Español por defecto.
-const Set<String> liveLanguages = {'es', 'en', 'fr', 'pt', 'it'};
-const String defaultLanguage = 'es';
-
-/// Voces prebuilt de Gemini Live disponibles (deben coincidir con el enum del
-/// backend en `live_service.set_voice`). Vacío = voz por defecto del backend.
-const List<String> liveVoices = [
-  'Charon',
-  'Puck',
-  'Kore',
-  'Fenrir',
-  'Aoede',
-  'Leda',
-  'Orus',
-  'Zephyr',
-];
-
 class LiveSettingsRepositoryImpl implements LiveSettingsRepository {
   LiveSettingsRepositoryImpl(this._prefs);
 

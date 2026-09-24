@@ -45,6 +45,9 @@ abstract class LiveSessionRepository {
   /// Tras un cambio de voz: pide una muestra breve de la nueva voz.
   void sendVoiceSample();
 
+  /// Tras un cambio de idioma: pide una confirmación corta en el idioma nuevo.
+  void sendLanguageChanged();
+
   /// Tras reactivar el micrófono (salir de silencio total): pide confirmación.
   void sendMicResumed();
 
