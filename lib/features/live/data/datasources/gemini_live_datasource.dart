@@ -22,6 +22,10 @@ const String kickoffTrigger = '[INICIO]';
 /// repetir la presentación completa (lo interpreta el system prompt).
 const String voiceSampleTrigger = '[VOZ]';
 
+/// Sentinela tras un cambio de idioma: el asistente confirma en una frase corta
+/// en el idioma nuevo, sin repetir la presentación (lo interpreta el system prompt).
+const String languageChangedTrigger = '[IDIOMA]';
+
 /// Sentinela tras reactivar el micrófono (al salir de silencio total): el
 /// asistente da una confirmación muy corta (lo interpreta el system prompt).
 const String micOnTrigger = '[MIC_ON]';
@@ -198,6 +202,9 @@ class GeminiLiveClient {
 
   /// Tras un cambio de voz: pide una muestra breve de la nueva voz.
   void sendVoiceSample() => sendText(voiceSampleTrigger);
+
+  /// Tras un cambio de idioma: confirmación corta en el idioma nuevo.
+  void sendLanguageChanged() => sendText(languageChangedTrigger);
 
   /// Tras reactivar el micrófono (salir de silencio total): pide confirmación.
   void sendMicResumed() => sendText(micOnTrigger);

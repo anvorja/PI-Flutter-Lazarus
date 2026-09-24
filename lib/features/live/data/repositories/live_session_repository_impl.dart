@@ -78,6 +78,9 @@ class LiveSessionRepositoryImpl implements LiveSessionRepository {
   void sendVoiceSample() => _client?.sendVoiceSample();
 
   @override
+  void sendLanguageChanged() => _client?.sendLanguageChanged();
+
+  @override
   void sendMicResumed() => _client?.sendMicResumed();
 
   @override

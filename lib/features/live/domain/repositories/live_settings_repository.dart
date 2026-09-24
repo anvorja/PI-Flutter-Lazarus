@@ -5,6 +5,23 @@
 /// (`LiveSettingsRepositoryImpl`). El controller y la UI solo conocen esta API.
 library;
 
+/// Idiomas de la app (deben coincidir con los del backend). Español por defecto.
+const Set<String> liveLanguages = {'es', 'en', 'fr', 'pt', 'it'};
+const String defaultLanguage = 'es';
+
+/// Voces prebuilt de Gemini Live disponibles (deben coincidir con el enum del
+/// backend en `live_service.set_voice`). Vacío = voz por defecto del backend.
+const List<String> liveVoices = [
+  'Charon',
+  'Puck',
+  'Kore',
+  'Fenrir',
+  'Aoede',
+  'Leda',
+  'Orus',
+  'Zephyr',
+];
+
 abstract class LiveSettingsRepository {
   String getAssistantName();
   Future<void> setAssistantName(String name);

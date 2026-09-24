@@ -13,6 +13,14 @@ class FakeLiveSessionRepository implements LiveSessionRepository {
   final List<String> sentImages = [];
   int kickoffs = 0;
   int micResumed = 0;
+  int voiceSamples = 0;
+  int languageChanges = 0;
+  String? lastVoice;
+  String? lastLanguage;
+  String? lastAssistantName;
+  String? lastUserName;
+  String? lastVerbosity;
+  bool? lastDescribing;
   final List<String> sentAudio = [];
   void Function(LiveResponse message)? _onResponse;
   void Function(LiveCloseCause cause)? _onClose;
@@ -36,6 +44,12 @@ class FakeLiveSessionRepository implements LiveSessionRepository {
     required void Function(Object error) onError,
   }) {
     connectCalls++;
+    lastVoice = voice;
+    lastLanguage = language;
+    lastAssistantName = assistantName;
+    lastUserName = userName;
+    lastVerbosity = verbosity;
+    lastDescribing = describing;
     lastCamera = camera;
     _connected = true;
     _onResponse = onResponse;
@@ -77,7 +91,10 @@ class FakeLiveSessionRepository implements LiveSessionRepository {
   void sendKickoff() => kickoffs++;
 
   @override
-  void sendVoiceSample() {}
+  void sendVoiceSample() => voiceSamples++;
+
+  @override
+  void sendLanguageChanged() => languageChanges++;
 
   @override
   void sendMicResumed() => micResumed++;

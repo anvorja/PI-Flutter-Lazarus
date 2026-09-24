@@ -27,14 +27,24 @@ void _log(String message) {
   if (_kLiveDebug) debugPrint(message);
 }
 
-const _validLanguages = {'es', 'en', 'fr', 'pt', 'it'};
-
 /// Respuesta a `set_language` con un idioma que la app no tiene: el asistente la
 /// recibe y le explica a la persona, en el idioma actual, cuáles hay.
 const String unsupportedLanguageResult =
     'error: unsupported language. The language was not changed. Tell the person, '
     'in the current language, that it is not available yet and that you can speak '
     'Spanish, English, French, Portuguese or Italian.';
+
+/// Respuesta a `set_voice` con una voz que no existe: no se cambia nada.
+const String unsupportedVoiceResult =
+    'error: unsupported voice. The voice was not changed. Tell the person, in one '
+    'sentence, that it is not available and name the available voices: Charon, '
+    'Puck, Kore, Fenrir, Aoede, Leda, Orus and Zephyr.';
+
+/// Respuesta a `set_voice` o `set_language` aplicados: la sesión se reinicia para
+/// usarlos y el asistente lo confirma en la sesión nueva (`[VOZ]` / `[IDIOMA]`).
+const String restartResult =
+    'ok. The session restarts now to apply the change. Say nothing now: you will '
+    'confirm it right after the restart.';
 
 /// Reintentos automáticos cuando no se puede conectar con el backend.
 const int maxConnectionRetries = 3;
@@ -50,6 +60,13 @@ enum LiveNotice {
   permissionBlocked,
   stopped,
 }
+
+/// Avisos informativos que la persona puede silenciar por voz (`set_system_cues`).
+/// Los demás explican cómo recuperarse de un error y suenan siempre.
+const Set<LiveNotice> mutableNotices = {
+  LiveNotice.retrying,
+  LiveNotice.stopped,
+};
 
 const Map<String, Map<LiveNotice, String>> _notices = {
   'es': {
@@ -140,9 +157,10 @@ String noticeText(LiveNotice notice, String language) =>
 
 enum LiveStatus { idle, connecting, connected, error }
 
-/// Qué disparar al completarse el setup: saludo normal o muestra de voz (tras
-/// un cambio de voz, para oírla sin repetir toda la presentación).
-enum _PendingKickoff { intro, voice, micOn }
+/// Qué disparar al completarse el setup: saludo normal, muestra de voz o
+/// confirmación de idioma (tras un cambio, sin repetir toda la presentación), o
+/// confirmación de micrófono reactivado.
+enum _PendingKickoff { intro, voice, language, micOn }
 
 /// Estado observable por la UI. Los detalles de orquestación (contadores de
 /// chunks, si hay audífonos, si el asistente sigue sonando…) son detalle
@@ -246,6 +264,9 @@ class LiveController extends Notifier<LiveUiState> {
   }
 
   void _teardown() {
+    // Lo que alcanzó a decir en esta sesión se registra aquí: si no, se pegaría
+    // al primer turno de la sesión siguiente.
+    _logAssistantSaid(' (cortado al cerrar la sesión)');
     _drainFallback?.cancel();
     _media.stopMic();
     _media.stopCamera();
@@ -320,6 +341,10 @@ class LiveController extends Notifier<LiveUiState> {
   }
 
   void _announce(LiveNotice notice) {
+    if (mutableNotices.contains(notice) && _settings.getSystemCuesMuted()) {
+      _log('[Lazarus] aviso silenciado: ${notice.name}');
+      return;
+    }
     _log('[Lazarus] aviso: ${notice.name}');
     ref.read(announcerProvider)(
       noticeText(notice, state.language),
@@ -476,6 +501,8 @@ class LiveController extends Notifier<LiveUiState> {
         switch (_pendingKickoff) {
           case _PendingKickoff.voice:
             _session.sendVoiceSample();
+          case _PendingKickoff.language:
+            _session.sendLanguageChanged();
           case _PendingKickoff.micOn:
             _session.sendMicResumed();
           case _PendingKickoff.intro:
@@ -513,7 +540,7 @@ class LiveController extends Notifier<LiveUiState> {
         _queuedAudioMs += pcm.length * 3 ~/ 4 ~/ 48;
         _media.playAudio(pcm);
       case LiveResponseType.interrupted:
-        _logAssistantSaid(interrupted: true);
+        _logAssistantSaid(' (interrumpido)');
         _log('[Lazarus] INTERRUMPIDO (barge-in: el usuario habló encima)');
         _assistantActive = false;
         _assistantTurnDone = false;
@@ -557,13 +584,11 @@ class LiveController extends Notifier<LiveUiState> {
     if (_onSpeaker) _log('[Lazarus] mic: reabierto ($reason)');
   }
 
-  void _logAssistantSaid({bool interrupted = false}) {
+  void _logAssistantSaid([String note = '']) {
     final said = _assistantSaid.toString().trim();
     _assistantSaid.clear();
     if (said.isEmpty) return;
-    _log(
-      '[Lazarus] asistente dijo${interrupted ? ' (interrumpido)' : ''}: "$said"',
-    );
+    _log('[Lazarus] asistente dijo$note: "$said"');
   }
 
   /// Personalización por voz: el asistente pidió ejecutar una o más funciones.
@@ -576,7 +601,10 @@ class LiveController extends Notifier<LiveUiState> {
     bool? meetingMode; // Modo A on/off (si aparece set_meeting_mode)
     bool? micActive; // Modo B: mic activo/apagado (si aparece set_microphone)
     final results =
-        <String, String>{}; // id de la llamada -> resultado si no es ok
+        <
+          String,
+          String
+        >{}; // id de la llamada -> resultado si no es un ok simple
 
     for (final call in toolCall.functionCalls) {
       switch (call.name) {
@@ -587,20 +615,32 @@ class LiveController extends Notifier<LiveUiState> {
           final name = (call.args['name'] ?? '').toString().trim();
           if (name.isNotEmpty) _settings.setUserName(name);
         case 'set_voice':
-          final voice = (call.args['voice'] ?? '').toString().trim();
-          if (voice.isNotEmpty) {
+          // Se acepta "aoede" o "AOEDE": se guarda con el nombre exacto de la voz.
+          final asked = (call.args['voice'] ?? '')
+              .toString()
+              .trim()
+              .toLowerCase();
+          final voice = liveVoices.firstWhere(
+            (v) => v.toLowerCase() == asked,
+            orElse: () => '',
+          );
+          if (voice.isEmpty) {
+            results[call.id] = unsupportedVoiceResult;
+          } else {
             _settings.setVoice(voice);
             reconnectVoice = true;
+            results[call.id] = restartResult;
           }
         case 'set_language':
           final lang = (call.args['language'] ?? '').toString();
-          if (!_validLanguages.contains(lang)) {
+          if (!liveLanguages.contains(lang)) {
             // Gemini puede pedir un idioma fuera de la lista (p. ej. ruso): no se
             // cambia nada y el asistente se lo explica a la persona.
             results[call.id] = unsupportedLanguageResult;
           } else {
             reconnectLang = lang;
             _settings.setLanguage(lang);
+            results[call.id] = restartResult;
           }
         case 'set_verbosity':
           final level = (call.args['level'] ?? '').toString();
@@ -636,7 +676,7 @@ class LiveController extends Notifier<LiveUiState> {
     if (reconnectLang != null || reconnectVoice) {
       final lang = reconnectLang ?? state.language;
       _pendingKickoff = reconnectLang != null
-          ? _PendingKickoff.intro
+          ? _PendingKickoff.language
           : _PendingKickoff.voice;
       if (reconnectLang != null) {
         state = state.copyWith(language: reconnectLang);

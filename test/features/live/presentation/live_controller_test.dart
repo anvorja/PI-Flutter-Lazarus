@@ -255,6 +255,53 @@ void main() {
   );
 
   test(
+    'lo dicho antes de cerrar la sesión no se pega al turno de la siguiente',
+    () async {
+      final logs = <String>[];
+      final original = debugPrint;
+      debugPrint = (message, {wrapWidth}) => logs.add(message ?? '');
+      addTearDown(() => debugPrint = original);
+
+      container = await build();
+      controller().onTap();
+      await settle();
+      session.emitSetupComplete();
+      await settle();
+      session.emitResponse(
+        const LiveResponse(
+          type: LiveResponseType.outputTranscription,
+          data: LiveTranscription(text: 'Tienes el monitor', finished: false),
+        ),
+      );
+      controller().disconnect();
+
+      controller().onTap();
+      await settle();
+      session.emitSetupComplete();
+      await settle();
+      session.emitResponse(
+        const LiveResponse(
+          type: LiveResponseType.outputTranscription,
+          data: LiveTranscription(text: 'Hola.', finished: false),
+        ),
+      );
+      session.emitResponse(
+        const LiveResponse(type: LiveResponseType.turnComplete),
+      );
+      await settle();
+
+      expect(
+        logs,
+        contains(
+          '[Lazarus] asistente dijo (cortado al cerrar la sesión): '
+          '"Tienes el monitor"',
+        ),
+      );
+      expect(logs, contains('[Lazarus] asistente dijo: "Hola."'));
+    },
+  );
+
+  test(
     'idioma no soportado: no cambia nada y se lo informa al asistente',
     () async {
       container = await build();
