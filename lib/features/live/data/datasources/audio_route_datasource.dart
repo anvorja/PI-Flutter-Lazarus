@@ -11,7 +11,8 @@ import 'package:flutter/services.dart';
 
 const _channel = MethodChannel('lazarus/audio');
 
-/// `true` si hay audífonos/auriculares de salida (cable, Bluetooth o USB).
+/// `true` si hay audífonos/auriculares de salida (cable, Bluetooth, BLE Audio,
+/// audífonos médicos o USB).
 /// En plataformas sin implementación nativa devuelve `false` (asume altavoz).
 Future<bool> isHeadsetConnected() async {
   try {

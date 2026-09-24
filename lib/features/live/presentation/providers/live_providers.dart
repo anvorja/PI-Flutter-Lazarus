@@ -88,6 +88,13 @@ final retryDelayProvider = Provider<Duration Function(int attempt)>((ref) {
   return (attempt) => Duration(seconds: 1 << attempt);
 });
 
+/// Margen de la red de seguridad del medio-dúplex: tras `turnComplete`, si no
+/// llega el aviso de fin del audio, el micrófono se reabre cuando pasa la
+/// duración estimada del audio pendiente más este margen.
+final drainFallbackMarginProvider = Provider<Duration>(
+  (ref) => const Duration(milliseconds: 1500),
+);
+
 final liveControllerProvider = NotifierProvider<LiveController, LiveUiState>(
   LiveController.new,
 );
