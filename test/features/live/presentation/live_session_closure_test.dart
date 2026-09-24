@@ -129,15 +129,18 @@ void main() {
     expect(announcements, isEmpty);
   });
 
-  test('Detener no provoca reconexión ni avisos', () async {
-    await openSession();
+  test(
+    'Detener no provoca reconexión; solo el aviso corto de cierre',
+    () async {
+      await openSession();
 
-    controller().disconnect();
-    await settle();
-    expect(state().status, LiveStatus.idle);
-    expect(session.connectCalls, 1);
-    expect(announcements, isEmpty);
-  });
+      controller().disconnect();
+      await settle();
+      expect(state().status, LiveStatus.idle);
+      expect(session.connectCalls, 1);
+      expect(announcements, [notice(LiveNotice.stopped)]);
+    },
+  );
 
   test('los avisos existen en los 5 idiomas de la app', () {
     for (final lang in ['es', 'en', 'fr', 'pt', 'it']) {
