@@ -2,6 +2,7 @@ import 'package:app/features/live/domain/entities/live_message.dart';
 import 'package:app/features/live/domain/entities/media_permission.dart';
 import 'package:app/features/live/presentation/controllers/live_controller.dart';
 import 'package:app/features/live/presentation/providers/live_providers.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -202,6 +203,141 @@ void main() {
     addTearDown(reopened.dispose);
     expect(reopened.read(liveControllerProvider).language, 'en');
   });
+
+  test(
+    'lo que dice el asistente queda completo en el log al terminar el turno',
+    () async {
+      final logs = <String>[];
+      final original = debugPrint;
+      debugPrint = (message, {wrapWidth}) => logs.add(message ?? '');
+      addTearDown(() => debugPrint = original);
+
+      container = await build();
+      controller().onTap();
+      await settle();
+      session.emitSetupComplete();
+      await settle();
+
+      for (final chunk in ['Silla, ', 'a las 12, ', 'dos pasos.']) {
+        session.emitResponse(
+          LiveResponse(
+            type: LiveResponseType.outputTranscription,
+            data: LiveTranscription(text: chunk, finished: false),
+          ),
+        );
+      }
+      await settle();
+      expect(state().assistantTranscript, 'Silla, a las 12, dos pasos.');
+
+      session.emitResponse(
+        const LiveResponse(type: LiveResponseType.turnComplete),
+      );
+      session.emitResponse(
+        const LiveResponse(
+          type: LiveResponseType.outputTranscription,
+          data: LiveTranscription(text: 'Escalón', finished: false),
+        ),
+      );
+      session.emitResponse(
+        const LiveResponse(type: LiveResponseType.interrupted),
+      );
+      await settle();
+
+      expect(
+        logs,
+        contains('[Lazarus] asistente dijo: "Silla, a las 12, dos pasos."'),
+      );
+      expect(
+        logs,
+        contains('[Lazarus] asistente dijo (interrumpido): "Escalón"'),
+      );
+    },
+  );
+
+  test(
+    'idioma no soportado: no cambia nada y se lo informa al asistente',
+    () async {
+      container = await build();
+      controller().onTap();
+      await settle();
+      session.emitSetupComplete();
+      await settle();
+
+      session.emitResponse(
+        const LiveResponse(
+          type: LiveResponseType.toolCall,
+          data: LiveToolCall(
+            functionCalls: [
+              LiveFunctionCall(
+                id: '7',
+                name: 'set_language',
+                args: {'language': 'ru'},
+              ),
+            ],
+          ),
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+
+      expect(state().language, 'es');
+      expect(session.connectCalls, 1); // no se reconecta
+      expect(session.toolResponses.single.result, unsupportedLanguageResult);
+    },
+  );
+
+  test('sin permiso de cámara la sesión sigue en modo solo audio', () async {
+    container = await build();
+    media.cameraGranted = false;
+
+    controller().onTap();
+    await settle();
+    expect(session.connectCalls, 1);
+    expect(
+      session.lastCamera,
+      isFalse,
+    ); // el backend pide al asistente avisarlo
+    expect(announcements, isEmpty); // lo dice el asistente, no un aviso encima
+
+    session.emitSetupComplete();
+    await settle();
+    expect(media.micStarted, isTrue);
+    expect(media.cameraStarted, isFalse);
+  });
+
+  test(
+    'con cámara envía los fotogramas y en silencio total deja de enviarlos',
+    () async {
+      container = await build();
+      controller().onTap();
+      await settle();
+      expect(session.lastCamera, isTrue);
+      session.emitSetupComplete();
+      await settle();
+
+      media.onFrame!('frame-1');
+      expect(session.sentImages, ['frame-1']);
+
+      session.emitResponse(
+        const LiveResponse(
+          type: LiveResponseType.toolCall,
+          data: LiveToolCall(
+            functionCalls: [
+              LiveFunctionCall(
+                id: '3',
+                name: 'set_microphone',
+                args: {'active': false},
+              ),
+            ],
+          ),
+        ),
+      );
+      await settle();
+      expect(state().micMuted, isTrue);
+
+      media.onFrame!('frame-2');
+      expect(session.sentImages, ['frame-1']);
+    },
+  );
 
   test('interrupción del asistente: vacía la cola de reproducción', () async {
     container = await build();

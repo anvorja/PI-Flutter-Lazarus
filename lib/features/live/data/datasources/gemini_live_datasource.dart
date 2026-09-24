@@ -36,6 +36,7 @@ class GeminiLiveClientOptions {
     this.userName,
     this.verbosity,
     this.describing,
+    this.camera = true,
     this.onResponse,
     this.onOpen,
     this.onClose,
@@ -58,6 +59,9 @@ class GeminiLiveClientOptions {
 
   /// Si Gemini describe el entorno por su cuenta (false = solo preguntas/alertas).
   final bool? describing;
+
+  /// `false` si la persona no dio permiso de cámara (sesión solo audio).
+  final bool camera;
 
   final void Function(LiveResponse message)? onResponse;
   final void Function()? onOpen;
@@ -143,6 +147,7 @@ class GeminiLiveClient {
         'userName': _opts.userName,
       if (_opts.verbosity != null) 'verbosity': _opts.verbosity,
       if (_opts.describing == false) 'describing': false,
+      if (!_opts.camera) 'camera': false,
     });
   }
 
@@ -198,7 +203,7 @@ class GeminiLiveClient {
   void sendMicResumed() => sendText(micOnTrigger);
 
   /// Responde a las funciones que pidió Gemini (toolCall).
-  void sendToolResponse(List<({String id, String name})> calls) {
+  void sendToolResponse(List<({String id, String name, String result})> calls) {
     _send({
       'tool_response': {
         'function_responses': [
@@ -206,7 +211,7 @@ class GeminiLiveClient {
             {
               'id': c.id,
               'name': c.name,
-              'response': {'result': 'ok'},
+              'response': {'result': c.result},
             },
         ],
       },

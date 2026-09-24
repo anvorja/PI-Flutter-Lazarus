@@ -9,6 +9,8 @@ import 'package:app/features/live/domain/repositories/media_repository.dart';
 
 class FakeLiveSessionRepository implements LiveSessionRepository {
   int connectCalls = 0;
+  bool? lastCamera;
+  final List<String> sentImages = [];
   int kickoffs = 0;
   int micResumed = 0;
   final List<String> sentAudio = [];
@@ -28,11 +30,13 @@ class FakeLiveSessionRepository implements LiveSessionRepository {
     String? userName,
     String? verbosity,
     bool? describing,
+    bool camera = true,
     required void Function(LiveResponse message) onResponse,
     required void Function(LiveCloseCause cause) onClose,
     required void Function(Object error) onError,
   }) {
     connectCalls++;
+    lastCamera = camera;
     _connected = true;
     _onResponse = onResponse;
     _onClose = onClose;
@@ -66,7 +70,8 @@ class FakeLiveSessionRepository implements LiveSessionRepository {
   void sendAudio(String base64Pcm) => sentAudio.add(base64Pcm);
 
   @override
-  void sendImage(String base64Jpeg, [String mimeType = 'image/jpeg']) {}
+  void sendImage(String base64Jpeg, [String mimeType = 'image/jpeg']) =>
+      sentImages.add(base64Jpeg);
 
   @override
   void sendKickoff() => kickoffs++;
@@ -77,21 +82,31 @@ class FakeLiveSessionRepository implements LiveSessionRepository {
   @override
   void sendMicResumed() => micResumed++;
 
+  final List<({String id, String name, String result})> toolResponses = [];
+
   @override
-  void sendToolResponse(List<({String id, String name})> calls) {}
+  void sendToolResponse(
+    List<({String id, String name, String result})> calls,
+  ) => toolResponses.addAll(calls);
 }
 
 class FakeMediaRepository implements MediaRepository {
-  FakeMediaRepository({this.permission = MediaPermission.granted});
+  FakeMediaRepository({
+    this.permission = MediaPermission.granted,
+    this.cameraGranted = true,
+  });
 
   MediaPermission permission;
+  bool cameraGranted;
+  void Function(String base64Jpeg)? onFrame;
   int settingsOpened = 0;
   int interruptions = 0;
   bool micStarted = false;
   bool cameraStarted = false;
 
   @override
-  Future<MediaPermission> requestPermissions() async => permission;
+  Future<MediaAccess> requestPermissions() async =>
+      (microphone: permission, camera: cameraGranted);
 
   @override
   Future<void> openPermissionSettings() async => settingsOpened++;
@@ -110,7 +125,10 @@ class FakeMediaRepository implements MediaRepository {
   Future<void> startCamera(
     void Function(String base64Jpeg) onFrame, {
     int fps = 1,
-  }) async => cameraStarted = true;
+  }) async {
+    cameraStarted = true;
+    this.onFrame = onFrame;
+  }
 
   @override
   Future<void> stopCamera() async => cameraStarted = false;

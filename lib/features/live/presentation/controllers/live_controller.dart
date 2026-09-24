@@ -27,6 +27,13 @@ void _log(String message) {
 
 const _validLanguages = {'es', 'en', 'fr', 'pt', 'it'};
 
+/// Respuesta a `set_language` con un idioma que la app no tiene: el asistente la
+/// recibe y le explica a la persona, en el idioma actual, cuáles hay.
+const String unsupportedLanguageResult =
+    'error: unsupported language. The language was not changed. Tell the person, '
+    'in the current language, that it is not available yet and that you can speak '
+    'Spanish, English, French, Portuguese or Italian.';
+
 /// Reintentos automáticos cuando no se puede conectar con el backend.
 const int maxConnectionRetries = 3;
 
@@ -53,9 +60,9 @@ const Map<String, Map<LiveNotice, String>> _notices = {
     LiveNotice.serverMisconfigured:
         'El servidor del asistente no está configurado. Avisa al equipo de soporte.',
     LiveNotice.permissionDenied:
-        'Necesito permiso de micrófono y cámara para acompañarte. Toca la pantalla para intentarlo de nuevo.',
+        'Necesito permiso de micrófono para acompañarte. Toca la pantalla para intentarlo de nuevo.',
     LiveNotice.permissionBlocked:
-        'Los permisos de micrófono y cámara están desactivados. Toca la pantalla para abrir los ajustes y activarlos.',
+        'El permiso de micrófono está desactivado. Toca la pantalla para abrir los ajustes y activarlo.',
   },
   'en': {
     LiveNotice.retrying: 'I lost the connection to the server. Retrying.',
@@ -68,9 +75,9 @@ const Map<String, Map<LiveNotice, String>> _notices = {
     LiveNotice.serverMisconfigured:
         'The assistant server is not configured. Please contact support.',
     LiveNotice.permissionDenied:
-        'I need microphone and camera permission to help you. Tap the screen to try again.',
+        'I need microphone permission to help you. Tap the screen to try again.',
     LiveNotice.permissionBlocked:
-        'Microphone and camera permissions are turned off. Tap the screen to open settings and turn them on.',
+        'Microphone permission is turned off. Tap the screen to open settings and turn it on.',
   },
   'fr': {
     LiveNotice.retrying: 'J\'ai perdu la connexion au serveur. Nouvel essai.',
@@ -83,9 +90,9 @@ const Map<String, Map<LiveNotice, String>> _notices = {
     LiveNotice.serverMisconfigured:
         'Le serveur de l\'assistant n\'est pas configuré. Contactez le support.',
     LiveNotice.permissionDenied:
-        'J\'ai besoin de l\'accès au micro et à la caméra pour vous accompagner. Touchez l\'écran pour réessayer.',
+        'J\'ai besoin de l\'accès au micro pour vous accompagner. Touchez l\'écran pour réessayer.',
     LiveNotice.permissionBlocked:
-        'L\'accès au micro et à la caméra est désactivé. Touchez l\'écran pour ouvrir les réglages et l\'activer.',
+        'L\'accès au micro est désactivé. Touchez l\'écran pour ouvrir les réglages et l\'activer.',
   },
   'pt': {
     LiveNotice.retrying: 'Perdi a conexão com o servidor. Tentando de novo.',
@@ -98,9 +105,9 @@ const Map<String, Map<LiveNotice, String>> _notices = {
     LiveNotice.serverMisconfigured:
         'O servidor do assistente não está configurado. Avise o suporte.',
     LiveNotice.permissionDenied:
-        'Preciso de permissão de microfone e câmera para te acompanhar. Toque na tela para tentar de novo.',
+        'Preciso de permissão de microfone para te acompanhar. Toque na tela para tentar de novo.',
     LiveNotice.permissionBlocked:
-        'As permissões de microfone e câmera estão desativadas. Toque na tela para abrir os ajustes e ativá-las.',
+        'A permissão de microfone está desativada. Toque na tela para abrir os ajustes e ativá-la.',
   },
   'it': {
     LiveNotice.retrying: 'Ho perso la connessione al server. Riprovo.',
@@ -113,9 +120,9 @@ const Map<String, Map<LiveNotice, String>> _notices = {
     LiveNotice.serverMisconfigured:
         'Il server dell\'assistente non è configurato. Contatta l\'assistenza.',
     LiveNotice.permissionDenied:
-        'Mi serve il permesso per microfono e fotocamera per accompagnarti. Tocca lo schermo per riprovare.',
+        'Mi serve il permesso del microfono per accompagnarti. Tocca lo schermo per riprovare.',
     LiveNotice.permissionBlocked:
-        'I permessi di microfono e fotocamera sono disattivati. Tocca lo schermo per aprire le impostazioni e attivarli.',
+        'Il permesso del microfono è disattivato. Tocca lo schermo per aprire le impostazioni e attivarlo.',
   },
 };
 
@@ -201,11 +208,17 @@ class LiveController extends Notifier<LiveUiState> {
   int _audioInChunks = 0; // diagnóstico: chunks de audio recibidos
   bool _onSpeaker = true; // sin audífonos → altavoz (anti-eco medio-dúplex)
   bool _assistantActive = false; // el asistente está sonando
+
+  /// Lo que el asistente lleva dicho en el turno actual (Gemini lo transcribe por
+  /// fragmentos). Se escribe completo en el log al terminar o interrumpirse el
+  /// turno: es la evidencia de QA de lo que dijo.
+  final StringBuffer _assistantSaid = StringBuffer();
   bool _assistantTurnDone = false; // terminó el turno (audio puede drenar)
   bool _audioDrained = false; // la cola de reproducción ya se vació
   _PendingKickoff _pendingKickoff = _PendingKickoff.intro;
   int _retryAttempts = 0; // reintentos de conexión consumidos
   bool _openSettingsOnTap = false; // permisos bloqueados: el toque abre ajustes
+  bool _cameraAllowed = true; // false = sin permiso de cámara (solo audio)
   bool _everConnected = false; // hubo setupComplete en esta sesión de uso
 
   @override
@@ -235,9 +248,14 @@ class LiveController extends Notifier<LiveUiState> {
       await _media.openPermissionSettings();
       return;
     }
-    final permission = await _media.requestPermissions();
+    final access = await _media.requestPermissions();
     if (!ref.mounted) return;
-    switch (permission) {
+    // Sin cámara la sesión sigue solo con audio: el asistente lo avisa al saludar.
+    _cameraAllowed = access.camera;
+    if (!_cameraAllowed) {
+      _log('[Lazarus] cámara: sin permiso → modo solo audio');
+    }
+    switch (access.microphone) {
       case MediaPermission.granted:
         break;
       case MediaPermission.denied:
@@ -269,6 +287,7 @@ class LiveController extends Notifier<LiveUiState> {
       userName: _settings.getUserName(),
       verbosity: _settings.getVerbosity(),
       describing: _settings.getDescribing(),
+      camera: _cameraAllowed,
       onResponse: _handleResponse,
       onClose: (cause) {
         _log('[Lazarus] sesión cerrada: ${cause.name}');
@@ -376,6 +395,10 @@ class LiveController extends Notifier<LiveUiState> {
         _session.sendAudio(pcm);
       });
 
+      if (!_cameraAllowed) {
+        _log('[Lazarus] media activa (solo micrófono: sin permiso de cámara)');
+        return;
+      }
       await _media.startCamera((jpeg) {
         // Silencio total (Modo B): tampoco enviar cámara (privacidad).
         if (state.micMuted) return;
@@ -446,7 +469,8 @@ class LiveController extends Notifier<LiveUiState> {
         state = state.copyWith(userTranscript: t.text);
       case LiveResponseType.outputTranscription:
         final t = message.data as LiveTranscription;
-        state = state.copyWith(assistantTranscript: t.text);
+        _assistantSaid.write(t.text);
+        state = state.copyWith(assistantTranscript: _assistantSaid.toString());
       case LiveResponseType.toolCall:
         _handleToolCall(message.data as LiveToolCall);
       case LiveResponseType.audio:
@@ -465,6 +489,7 @@ class LiveController extends Notifier<LiveUiState> {
         _audioDrained = false;
         _media.playAudio(message.data as String);
       case LiveResponseType.interrupted:
+        _logAssistantSaid(interrupted: true);
         _log('[Lazarus] INTERRUMPIDO (barge-in: el usuario habló encima)');
         _assistantActive = false;
         _assistantTurnDone = false;
@@ -475,6 +500,7 @@ class LiveController extends Notifier<LiveUiState> {
           );
         });
       case LiveResponseType.turnComplete:
+        _logAssistantSaid();
         // El asistente terminó de generar; el audio aún puede estar drenando.
         // El mic se reabrirá cuando la cola se vacíe (onDrained). Si el
         // drenado llegó primero (respuesta corta), reabre ya mismo.
@@ -487,6 +513,15 @@ class LiveController extends Notifier<LiveUiState> {
     }
   }
 
+  void _logAssistantSaid({bool interrupted = false}) {
+    final said = _assistantSaid.toString().trim();
+    _assistantSaid.clear();
+    if (said.isEmpty) return;
+    _log(
+      '[Lazarus] asistente dijo${interrupted ? ' (interrumpido)' : ''}: "$said"',
+    );
+  }
+
   /// Personalización por voz: el asistente pidió ejecutar una o más funciones.
   void _handleToolCall(LiveToolCall toolCall) {
     _log(
@@ -496,6 +531,8 @@ class LiveController extends Notifier<LiveUiState> {
     var reconnectVoice = false;
     bool? meetingMode; // Modo A on/off (si aparece set_meeting_mode)
     bool? micActive; // Modo B: mic activo/apagado (si aparece set_microphone)
+    final results =
+        <String, String>{}; // id de la llamada -> resultado si no es ok
 
     for (final call in toolCall.functionCalls) {
       switch (call.name) {
@@ -513,7 +550,11 @@ class LiveController extends Notifier<LiveUiState> {
           }
         case 'set_language':
           final lang = (call.args['language'] ?? '').toString();
-          if (_validLanguages.contains(lang)) {
+          if (!_validLanguages.contains(lang)) {
+            // Gemini puede pedir un idioma fuera de la lista (p. ej. ruso): no se
+            // cambia nada y el asistente se lo explica a la persona.
+            results[call.id] = unsupportedLanguageResult;
+          } else {
             reconnectLang = lang;
             _settings.setLanguage(lang);
           }
@@ -543,7 +584,8 @@ class LiveController extends Notifier<LiveUiState> {
     }
 
     _session.sendToolResponse([
-      for (final c in toolCall.functionCalls) (id: c.id, name: c.name),
+      for (final c in toolCall.functionCalls)
+        (id: c.id, name: c.name, result: results[c.id] ?? 'ok'),
     ]);
 
     // Cambiar idioma o voz exige una sesión nueva (ambos se fijan en el setup).
