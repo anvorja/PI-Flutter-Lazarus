@@ -160,8 +160,10 @@ class FakeMediaRepository implements MediaRepository {
   Future<void> initPlayer(void Function() onDrained) async =>
       this.onDrained = onDrained;
 
+  final List<String> played = [];
+
   @override
-  Future<void> playAudio(String base64Pcm) async {}
+  Future<void> playAudio(String base64Pcm) async => played.add(base64Pcm);
 
   @override
   Future<void> interruptPlayback() async => interruptions++;

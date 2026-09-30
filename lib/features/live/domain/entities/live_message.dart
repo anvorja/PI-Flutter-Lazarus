@@ -80,81 +80,91 @@ class LiveResponse {
   final bool endOfTurn;
 }
 
-/// Convierte un frame crudo de Gemini en un [LiveResponse], revisando los
-/// campos en orden de prioridad.
-LiveResponse parseLiveMessage(Map<String, dynamic> raw) {
+/// Convierte un frame crudo de Gemini en los [LiveResponse] que contiene, en
+/// orden. Un mismo frame puede traer a la vez, por ejemplo, la transcripción de
+/// lo que dice el asistente y su audio, o la voz de la persona y el fin del
+/// turno: devolver solo uno perdía el resto (audio que no sonaba, nombres que no
+/// llegaban a la transcripción). El fin del turno va siempre al final.
+List<LiveResponse> parseLiveMessages(Map<String, dynamic> raw) {
+  final out = <LiveResponse>[];
   final serverContent = (raw['serverContent'] as Map?)?.cast<String, dynamic>();
+  final interrupted = serverContent?['interrupted'] == true;
   final endOfTurn = serverContent?['turnComplete'] == true;
 
   if (raw['setupComplete'] != null) {
-    return const LiveResponse(type: LiveResponseType.setupComplete);
-  }
-  if (serverContent?['interrupted'] == true) {
-    return LiveResponse(
-      type: LiveResponseType.interrupted,
-      endOfTurn: endOfTurn,
-    );
-  }
-  if (endOfTurn) {
-    return const LiveResponse(
-      type: LiveResponseType.turnComplete,
-      endOfTurn: true,
-    );
+    out.add(const LiveResponse(type: LiveResponseType.setupComplete));
   }
 
   final inputTr = (serverContent?['inputTranscription'] as Map?)
       ?.cast<String, dynamic>();
   if (inputTr != null) {
-    return LiveResponse(
-      type: LiveResponseType.inputTranscription,
-      data: LiveTranscription(
-        text: (inputTr['text'] ?? '').toString(),
-        finished: inputTr['finished'] == true,
+    out.add(
+      LiveResponse(
+        type: LiveResponseType.inputTranscription,
+        data: LiveTranscription(
+          text: (inputTr['text'] ?? '').toString(),
+          finished: inputTr['finished'] == true,
+        ),
       ),
     );
   }
 
-  final outputTr = (serverContent?['outputTranscription'] as Map?)
-      ?.cast<String, dynamic>();
-  if (outputTr != null) {
-    return LiveResponse(
-      type: LiveResponseType.outputTranscription,
-      data: LiveTranscription(
-        text: (outputTr['text'] ?? '').toString(),
-        finished: outputTr['finished'] == true,
-      ),
+  // La persona habló encima: lo que el asistente traía en este frame ya no
+  // debe sonar.
+  if (interrupted) {
+    out.add(
+      LiveResponse(type: LiveResponseType.interrupted, endOfTurn: endOfTurn),
     );
+    return out;
   }
 
   final toolCall = (raw['toolCall'] as Map?)?.cast<String, dynamic>();
   if (toolCall != null) {
-    return LiveResponse(
-      type: LiveResponseType.toolCall,
-      data: LiveToolCall.fromJson(toolCall),
+    out.add(
+      LiveResponse(
+        type: LiveResponseType.toolCall,
+        data: LiveToolCall.fromJson(toolCall),
+      ),
     );
   }
 
   final modelTurn = (serverContent?['modelTurn'] as Map?)
       ?.cast<String, dynamic>();
-  final parts = (modelTurn?['parts'] as List?)
-      ?.whereType<Map>()
-      .map((e) => e.cast<String, dynamic>())
-      .toList();
-  if (parts != null && parts.isNotEmpty) {
-    final first = parts.first;
-    final text = first['text'];
+  final parts = (modelTurn?['parts'] as List?)?.whereType<Map>().map(
+    (e) => e.cast<String, dynamic>(),
+  );
+  for (final part in parts ?? const <Map<String, dynamic>>[]) {
+    final text = part['text'];
+    final audio = (part['inlineData'] as Map?)?['data'];
     if (text != null) {
-      return LiveResponse(type: LiveResponseType.text, data: text.toString());
-    }
-    final inlineData = (first['inlineData'] as Map?)?.cast<String, dynamic>();
-    final audioData = inlineData?['data'];
-    if (audioData != null) {
-      return LiveResponse(
-        type: LiveResponseType.audio,
-        data: audioData.toString(),
+      out.add(LiveResponse(type: LiveResponseType.text, data: text.toString()));
+    } else if (audio != null) {
+      out.add(
+        LiveResponse(type: LiveResponseType.audio, data: audio.toString()),
       );
     }
   }
 
-  return const LiveResponse(type: LiveResponseType.unknown);
+  final outputTr = (serverContent?['outputTranscription'] as Map?)
+      ?.cast<String, dynamic>();
+  if (outputTr != null) {
+    out.add(
+      LiveResponse(
+        type: LiveResponseType.outputTranscription,
+        data: LiveTranscription(
+          text: (outputTr['text'] ?? '').toString(),
+          finished: outputTr['finished'] == true,
+        ),
+      ),
+    );
+  }
+
+  if (endOfTurn) {
+    out.add(
+      const LiveResponse(type: LiveResponseType.turnComplete, endOfTurn: true),
+    );
+  }
+
+  if (out.isEmpty) out.add(const LiveResponse(type: LiveResponseType.unknown));
+  return out;
 }

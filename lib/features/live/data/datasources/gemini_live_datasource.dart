@@ -10,6 +10,8 @@ library;
 
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
+
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as ws_status;
 
@@ -159,7 +161,17 @@ class GeminiLiveClient {
     try {
       final text = event is List<int> ? utf8.decode(event) : event as String;
       final raw = jsonDecode(text) as Map<String, dynamic>;
-      _opts.onResponse?.call(parseLiveMessage(raw));
+      final responses = parseLiveMessages(raw);
+      // Diagnóstico: antes solo se procesaba el primer evento de cada frame.
+      if (responses.length > 1) {
+        debugPrint(
+          '[Lazarus] frame con varios eventos: '
+          '${responses.map((r) => r.type.name).join(' + ')}',
+        );
+      }
+      for (final response in responses) {
+        _opts.onResponse?.call(response);
+      }
     } catch (_) {
       // Mensaje no parseable: se ignora.
     }
