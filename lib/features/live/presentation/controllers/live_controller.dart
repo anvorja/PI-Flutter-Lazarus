@@ -46,6 +46,70 @@ const String restartResult =
     'ok. The session restarts now to apply the change. Say nothing now: you will '
     'confirm it right after the restart.';
 
+/// Modo reunión: cuánto tiempo atrás se busca el nombre del asistente en lo que
+/// se oyó para dejarlo responder.
+const Duration meetingNameWindow = Duration(seconds: 10);
+
+/// Minúsculas y sin tildes, para comparar nombres en la transcripción.
+String normalizeForMatch(String text) {
+  const from = 'áàäâéèëêíìïîóòöôúùüûñ';
+  const to = 'aaaaeeeeiiiioooouuuun';
+  final lower = text.toLowerCase().trim();
+  final out = StringBuffer();
+  for (final ch in lower.split('')) {
+    final i = from.indexOf(ch);
+    out.write(i >= 0 ? to[i] : ch);
+  }
+  return out.toString();
+}
+
+/// Si [text] nombra a [name] como palabra completa. Tolera una letra de
+/// diferencia en nombres de 4 letras o más, porque la transcripción a veces los
+/// escribe mal ("Área" por "Aria"); los nombres cortos deben coincidir exacto
+/// para no confundirse con palabras comunes ("Sol" y "sal").
+bool mentionsName(String text, String name) {
+  final target = normalizeForMatch(name).split(RegExp(r'[^a-z0-9]+')).first;
+  if (target.isEmpty) return false;
+  final tolerance = target.length >= 4 ? 1 : 0;
+  return normalizeForMatch(text)
+      .split(RegExp(r'[^a-z0-9]+'))
+      .any((word) => _editDistance(word, target) <= tolerance);
+}
+
+int _editDistance(String a, String b) {
+  if ((a.length - b.length).abs() > 1) return 2; // basta saber que es > 1
+  var previous = List<int>.generate(b.length + 1, (j) => j);
+  for (var i = 1; i <= a.length; i++) {
+    final current = [i, ...List<int>.filled(b.length, 0)];
+    for (var j = 1; j <= b.length; j++) {
+      final cost = a[i - 1] == b[j - 1] ? 0 : 1;
+      current[j] = [
+        previous[j] + 1,
+        current[j - 1] + 1,
+        previous[j - 1] + cost,
+      ].reduce((x, y) => x < y ? x : y);
+    }
+    previous = current;
+  }
+  return previous[b.length];
+}
+
+/// "Silencio total" en los idiomas de la app (normalizado: sin tildes).
+const Set<String> totalSilencePhrases = {
+  'silencio total', // es y pt ("silêncio total" sin tildes)
+  'total silence',
+  'silence total',
+  'silenzio totale',
+};
+
+/// Si la persona pidió silencio total en [text].
+bool asksTotalSilence(String text) {
+  final words = normalizeForMatch(
+    text,
+  ).replaceAll(RegExp(r'[^a-z]+'), ' ').trim();
+  return totalSilencePhrases.any(words.contains);
+}
+
 /// Reintentos automáticos cuando no se puede conectar con el backend.
 const int maxConnectionRetries = 3;
 
@@ -253,6 +317,16 @@ class LiveController extends Notifier<LiveUiState> {
   bool _cameraAllowed = true; // false = sin permiso de cámara (solo audio)
   bool _everConnected = false; // hubo setupComplete en esta sesión de uso
 
+  /// Modo reunión: lo que se oyó hace poco (para saber si llamaron al asistente
+  /// por su nombre) y el audio del turno actual retenido hasta saberlo.
+  final List<({DateTime at, String text})> _heard = [];
+  final List<String> _heldAudio = [];
+  bool _turnAllowed = false; // este turno puede sonar aunque sea modo reunión
+
+  /// La persona pidió "silencio total": si el asistente no llama a
+  /// `set_microphone`, la app lo aplica igual al terminar su turno (privacidad).
+  bool _silenceRequested = false;
+
   @override
   LiveUiState build() {
     _session = ref.read(liveSessionRepositoryProvider);
@@ -264,6 +338,8 @@ class LiveController extends Notifier<LiveUiState> {
   }
 
   void _teardown() {
+    _heldAudio.clear();
+    _turnAllowed = false;
     // Lo que alcanzó a decir en esta sesión se registra aquí: si no, se pegaría
     // al primer turno de la sesión siguiente.
     _logAssistantSaid(' (cortado al cerrar la sesión)');
@@ -459,7 +535,12 @@ class LiveController extends Notifier<LiveUiState> {
     _everConnected = false;
     _pendingKickoff = _PendingKickoff.intro;
     if (!ref.mounted) return;
-    state = state.copyWith(status: LiveStatus.idle);
+    // Los modos de silencio son de sesión: Detener los termina.
+    state = state.copyWith(
+      status: LiveStatus.idle,
+      meetingMode: false,
+      micMuted: false,
+    );
     _announce(LiveNotice.stopped);
   }
 
@@ -514,6 +595,11 @@ class LiveController extends Notifier<LiveUiState> {
         final t = message.data as LiveTranscription;
         _log('[Lazarus] te escuché (transcripción): "${t.text}"');
         state = state.copyWith(userTranscript: t.text);
+        _remember(t.text);
+        if (asksTotalSilence(_recentHeard())) _silenceRequested = true;
+        if (_heldAudio.isNotEmpty && _calledByName()) {
+          _allowTurn('lo llamaron por su nombre');
+        }
       case LiveResponseType.outputTranscription:
         final t = message.data as LiveTranscription;
         _assistantSaid.write(t.text);
@@ -521,26 +607,27 @@ class LiveController extends Notifier<LiveUiState> {
       case LiveResponseType.toolCall:
         _handleToolCall(message.data as LiveToolCall);
       case LiveResponseType.audio:
-        _audioInChunks++;
-        if (_audioInChunks == 1) {
-          _log(
-            '[Lazarus] audio del asistente: primer chunk recibido → reproduciendo',
-          );
-        }
-        // El asistente está sonando → en altavoz, cierra el mic (anti-eco).
-        if (!_assistantActive) {
-          _log('[Lazarus] asistente: INICIA turno de audio');
-        }
-        _assistantActive = true;
-        _assistantTurnDone = false;
-        _audioDrained = false;
-        _drainFallback?.cancel();
         final pcm = message.data as String;
-        // base64 → bytes (×3/4) → muestras de 16 bits (÷2) → ms a 24 kHz (÷24).
-        _queuedAudioMs += pcm.length * 3 ~/ 4 ~/ 48;
-        _media.playAudio(pcm);
+        // Modo reunión: calla salvo que lo llamen por su nombre. El audio se
+        // retiene hasta saberlo (la transcripción puede llegar después).
+        if (state.meetingMode && !_turnAllowed) {
+          if (_calledByName()) {
+            _allowTurn('lo llamaron por su nombre');
+          } else {
+            if (_heldAudio.isEmpty) {
+              _log('[Lazarus] modo reunión: respuesta retenida');
+            }
+            _heldAudio.add(pcm);
+            return;
+          }
+        }
+        _turnAllowed = _turnAllowed || state.meetingMode;
+        _releaseHeldAudio();
+        _playAssistantAudio(pcm);
       case LiveResponseType.interrupted:
-        _logAssistantSaid(' (interrumpido)');
+        _logAssistantSaid(
+          _endMeetingTurn() ? ' (descartado: modo reunión)' : ' (interrumpido)',
+        );
         _log('[Lazarus] INTERRUMPIDO (barge-in: el usuario habló encima)');
         _assistantActive = false;
         _assistantTurnDone = false;
@@ -553,7 +640,10 @@ class LiveController extends Notifier<LiveUiState> {
           );
         });
       case LiveResponseType.turnComplete:
-        _logAssistantSaid();
+        _logAssistantSaid(
+          _endMeetingTurn() ? ' (descartado: modo reunión)' : '',
+        );
+        _applyRequestedSilence();
         // El asistente terminó de generar; el audio aún puede estar drenando.
         // El mic se reabrirá cuando la cola se vacíe (onDrained). Si el
         // drenado llegó primero (respuesta corta), reabre ya mismo.
@@ -573,6 +663,91 @@ class LiveController extends Notifier<LiveUiState> {
       case LiveResponseType.unknown:
         break;
     }
+  }
+
+  /// Reproduce un fragmento de audio del asistente (en altavoz cierra el mic).
+  void _playAssistantAudio(String pcm) {
+    _audioInChunks++;
+    if (_audioInChunks == 1) {
+      _log(
+        '[Lazarus] audio del asistente: primer chunk recibido → reproduciendo',
+      );
+    }
+    // El asistente está sonando → en altavoz, cierra el mic (anti-eco).
+    if (!_assistantActive) {
+      _log('[Lazarus] asistente: INICIA turno de audio');
+    }
+    _assistantActive = true;
+    _assistantTurnDone = false;
+    _audioDrained = false;
+    _drainFallback?.cancel();
+    // base64 → bytes (×3/4) → muestras de 16 bits (÷2) → ms a 24 kHz (÷24).
+    _queuedAudioMs += pcm.length * 3 ~/ 4 ~/ 48;
+    _media.playAudio(pcm);
+  }
+
+  /// Guarda lo que se oyó en los últimos segundos (modo reunión).
+  void _remember(String text) {
+    final now = DateTime.now();
+    _heard
+      ..removeWhere((h) => now.difference(h.at) > meetingNameWindow)
+      ..add((at: now, text: text));
+  }
+
+  /// En modo reunión, si alguien dijo el nombre del asistente hace poco.
+  bool _calledByName() {
+    return mentionsName(_recentHeard(), _settings.getAssistantName());
+  }
+
+  /// Lo que se oyó en los últimos segundos, unido.
+  String _recentHeard() {
+    final now = DateTime.now();
+    return _heard
+        .where((h) => now.difference(h.at) <= meetingNameWindow)
+        .map((h) => h.text)
+        .join();
+  }
+
+  /// Red de seguridad del silencio total: el asistente dijo que se silenciaba
+  /// pero no llamó a la función, así que la app deja de enviar igual.
+  void _applyRequestedSilence() {
+    if (!_silenceRequested) return;
+    _silenceRequested = false;
+    _heard.clear();
+    if (state.micMuted) return;
+    _log(
+      '[Lazarus] silencio total aplicado por la app (el asistente no llamó a set_microphone)',
+    );
+    state = state.copyWith(micMuted: true);
+  }
+
+  /// Este turno puede sonar en modo reunión: suelta el audio retenido.
+  void _allowTurn(String reason) {
+    if (_turnAllowed) return;
+    _turnAllowed = true;
+    _log('[Lazarus] modo reunión: responde ($reason)');
+    _releaseHeldAudio();
+  }
+
+  void _releaseHeldAudio() {
+    if (_heldAudio.isEmpty) return;
+    final held = List<String>.of(_heldAudio);
+    _heldAudio.clear();
+    held.forEach(_playAssistantAudio);
+  }
+
+  /// Fin del turno del asistente: lo retenido y no autorizado se descarta.
+  /// Devuelve si hubo audio descartado.
+  bool _endMeetingTurn() {
+    final discarded = _heldAudio.isNotEmpty;
+    if (discarded) {
+      _log(
+        '[Lazarus] modo reunión: respuesta descartada (no lo llamaron por su nombre)',
+      );
+    }
+    _heldAudio.clear();
+    _turnAllowed = false;
+    return discarded;
   }
 
   /// Medio-dúplex: el micrófono se reabre cuando el audio terminó **y** llegó
@@ -656,6 +831,7 @@ class LiveController extends Notifier<LiveUiState> {
           meetingMode = call.args['enabled'] == true;
         case 'set_microphone':
           micActive = call.args['active'] != false;
+          _silenceRequested = false;
       }
     }
 
@@ -666,6 +842,8 @@ class LiveController extends Notifier<LiveUiState> {
         micMuted: micActive != null ? !micActive : null,
       );
     }
+    // La confirmación de entrar o salir del modo reunión sí debe sonar.
+    if (meetingMode != null) _allowTurn('entra o sale del modo reunión');
 
     _session.sendToolResponse([
       for (final c in toolCall.functionCalls)

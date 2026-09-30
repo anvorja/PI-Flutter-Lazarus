@@ -2,14 +2,16 @@ import 'package:app/features/live/domain/entities/live_message.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  group('parseLiveMessage', () {
+  group('parseLiveMessages', () {
+    List<LiveResponseType> types(Map<String, dynamic> raw) =>
+        parseLiveMessages(raw).map((r) => r.type).toList();
+
     test('setupComplete', () {
-      final r = parseLiveMessage({'setupComplete': {}});
-      expect(r.type, LiveResponseType.setupComplete);
+      expect(types({'setupComplete': {}}), [LiveResponseType.setupComplete]);
     });
 
     test('audio del asistente en base64', () {
-      final r = parseLiveMessage({
+      final r = parseLiveMessages({
         'serverContent': {
           'modelTurn': {
             'parts': [
@@ -19,40 +21,52 @@ void main() {
             ],
           },
         },
-      });
+      }).single;
       expect(r.type, LiveResponseType.audio);
       expect(r.data, 'AAAA');
     });
 
-    test('interrupted tiene prioridad sobre el resto del contenido', () {
-      final r = parseLiveMessage({
-        'serverContent': {'interrupted': true, 'turnComplete': true},
+    test('interrupted descarta el contenido del asistente de ese frame', () {
+      final r = parseLiveMessages({
+        'serverContent': {
+          'interrupted': true,
+          'turnComplete': true,
+          'modelTurn': {
+            'parts': [
+              {
+                'inlineData': {'data': 'AAAA'},
+              },
+            ],
+          },
+        },
       });
-      expect(r.type, LiveResponseType.interrupted);
-      expect(r.endOfTurn, isTrue);
+      expect(r.map((e) => e.type), [LiveResponseType.interrupted]);
+      expect(r.single.endOfTurn, isTrue);
     });
 
     test('turnComplete', () {
-      final r = parseLiveMessage({
-        'serverContent': {'turnComplete': true},
-      });
-      expect(r.type, LiveResponseType.turnComplete);
+      expect(
+        types({
+          'serverContent': {'turnComplete': true},
+        }),
+        [LiveResponseType.turnComplete],
+      );
     });
 
     test('transcripción de la voz del usuario', () {
-      final r = parseLiveMessage({
-        'serverContent': {
-          'inputTranscription': {'text': 'hola', 'finished': true},
-        },
-      });
-      expect(r.type, LiveResponseType.inputTranscription);
-      final t = r.data as LiveTranscription;
+      final t =
+          parseLiveMessages({
+                'serverContent': {
+                  'inputTranscription': {'text': 'hola', 'finished': true},
+                },
+              }).single.data
+              as LiveTranscription;
       expect(t.text, 'hola');
       expect(t.finished, isTrue);
     });
 
     test('toolCall con sus funciones y argumentos', () {
-      final r = parseLiveMessage({
+      final r = parseLiveMessages({
         'toolCall': {
           'functionCalls': [
             {
@@ -62,7 +76,7 @@ void main() {
             },
           ],
         },
-      });
+      }).single;
       expect(r.type, LiveResponseType.toolCall);
       final call = (r.data as LiveToolCall).functionCalls.single;
       expect(call.name, 'set_voice');
@@ -70,7 +84,64 @@ void main() {
     });
 
     test('frame desconocido', () {
-      expect(parseLiveMessage({'otro': 1}).type, LiveResponseType.unknown);
+      expect(types({'otro': 1}), [LiveResponseType.unknown]);
+    });
+
+    // CP-LAZA-37: el "Entendido." se vio en el log pero no sonó.
+    test('transcripción y audio en el mismo frame: llegan los dos', () {
+      final r = parseLiveMessages({
+        'serverContent': {
+          'outputTranscription': {'text': 'Entendido.'},
+          'modelTurn': {
+            'parts': [
+              {
+                'inlineData': {'data': 'AAAA'},
+              },
+              {
+                'inlineData': {'data': 'BBBB'},
+              },
+            ],
+          },
+          'turnComplete': true,
+        },
+      });
+      expect(r.map((e) => e.type), [
+        LiveResponseType.audio,
+        LiveResponseType.audio,
+        LiveResponseType.outputTranscription,
+        LiveResponseType.turnComplete,
+      ]);
+      expect(r.take(2).map((e) => e.data), ['AAAA', 'BBBB']);
+    });
+
+    // CP-LAZA-37: "Aria, ¿qué se dijo?" llegó sin el nombre.
+    test(
+      'voz de la persona y fin del turno en el mismo frame: llegan los dos',
+      () {
+        final r = parseLiveMessages({
+          'serverContent': {
+            'inputTranscription': {'text': ' Aria'},
+            'turnComplete': true,
+          },
+        });
+        expect(r.map((e) => e.type), [
+          LiveResponseType.inputTranscription,
+          LiveResponseType.turnComplete,
+        ]);
+        expect((r.first.data as LiveTranscription).text, ' Aria');
+      },
+    );
+
+    test('voz de la persona e interrupción en el mismo frame', () {
+      expect(
+        types({
+          'serverContent': {
+            'inputTranscription': {'text': ' Aria'},
+            'interrupted': true,
+          },
+        }),
+        [LiveResponseType.inputTranscription, LiveResponseType.interrupted],
+      );
     });
   });
 }
