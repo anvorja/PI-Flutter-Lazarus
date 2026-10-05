@@ -17,6 +17,7 @@ import '../../domain/entities/media_permission.dart';
 import '../../domain/repositories/live_session_repository.dart';
 import '../../domain/repositories/live_settings_repository.dart';
 import '../../domain/repositories/media_repository.dart';
+import '../../../location/presentation/providers/location_providers.dart';
 import '../providers/live_providers.dart';
 
 /// Activa las trazas de diagnóstico `[Lazarus]` de la sesión Live (mic, turnos,
@@ -120,6 +121,7 @@ enum LiveNotice {
   sessionPaused,
   quotaExceeded,
   serverMisconfigured,
+  billingExhausted,
   permissionDenied,
   permissionBlocked,
   stopped,
@@ -143,6 +145,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'El servicio del asistente no está disponible por ahora. Intenta más tarde.',
     LiveNotice.serverMisconfigured:
         'El servidor del asistente no está configurado. Avisa al equipo de soporte.',
+    LiveNotice.billingExhausted:
+        'El servicio del asistente se quedó sin saldo. Pide a quien administra Lazarus que lo recargue.',
     LiveNotice.permissionDenied:
         'Necesito permiso de micrófono para acompañarte. Toca la pantalla para intentarlo de nuevo.',
     LiveNotice.permissionBlocked:
@@ -159,6 +163,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'The assistant service is not available right now. Try again later.',
     LiveNotice.serverMisconfigured:
         'The assistant server is not configured. Please contact support.',
+    LiveNotice.billingExhausted:
+        'The assistant service has run out of credit. Ask whoever manages Lazarus to top it up.',
     LiveNotice.permissionDenied:
         'I need microphone permission to help you. Tap the screen to try again.',
     LiveNotice.permissionBlocked:
@@ -175,6 +181,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Le service de l\'assistant est indisponible. Réessayez plus tard.',
     LiveNotice.serverMisconfigured:
         'Le serveur de l\'assistant n\'est pas configuré. Contactez le support.',
+    LiveNotice.billingExhausted:
+        'Le service de l\'assistant n\'a plus de crédit. Demande à la personne qui gère Lazarus de le recharger.',
     LiveNotice.permissionDenied:
         'J\'ai besoin de l\'accès au micro pour vous accompagner. Touchez l\'écran pour réessayer.',
     LiveNotice.permissionBlocked:
@@ -191,6 +199,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'O serviço do assistente não está disponível agora. Tente mais tarde.',
     LiveNotice.serverMisconfigured:
         'O servidor do assistente não está configurado. Avise o suporte.',
+    LiveNotice.billingExhausted:
+        'O serviço do assistente ficou sem saldo. Peça a quem administra o Lazarus para recarregar.',
     LiveNotice.permissionDenied:
         'Preciso de permissão de microfone para te acompanhar. Toque na tela para tentar de novo.',
     LiveNotice.permissionBlocked:
@@ -207,6 +217,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Il servizio dell\'assistente non è disponibile ora. Riprova più tardi.',
     LiveNotice.serverMisconfigured:
         'Il server dell\'assistente non è configurato. Contatta l\'assistenza.',
+    LiveNotice.billingExhausted:
+        'Il servizio dell\'assistente ha esaurito il credito. Chiedi a chi gestisce Lazarus di ricaricarlo.',
     LiveNotice.permissionDenied:
         'Mi serve il permesso del microfono per accompagnarti. Tocca lo schermo per riprovare.',
     LiveNotice.permissionBlocked:
@@ -380,6 +392,8 @@ class LiveController extends Notifier<LiveUiState> {
         _announce(LiveNotice.permissionBlocked);
         return;
     }
+    // La ubicación acompaña a la sesión; sin permiso la sesión sigue igual.
+    unawaited(ref.read(locationControllerProvider.notifier).start());
     _openSession(state.language);
   }
 
@@ -449,6 +463,11 @@ class LiveController extends Notifier<LiveUiState> {
       case LiveCloseCause.serverMisconfigured:
         state = state.copyWith(status: LiveStatus.error);
         _announce(LiveNotice.serverMisconfigured);
+      case LiveCloseCause.billingExhausted:
+        // No se reintenta: sin saldo, cada intento falla igual (en la prueba,
+        // 8 reintentos seguidos con "Perdí la conexión").
+        state = state.copyWith(status: LiveStatus.error);
+        _announce(LiveNotice.billingExhausted);
       case LiveCloseCause.protocolError:
         state = state.copyWith(status: LiveStatus.error);
         _announce(LiveNotice.connectionFailed);
@@ -532,6 +551,7 @@ class LiveController extends Notifier<LiveUiState> {
   /// frase corta (sin reconectar).
   void disconnect() {
     _teardown();
+    ref.read(locationControllerProvider.notifier).stop();
     _everConnected = false;
     _pendingKickoff = _PendingKickoff.intro;
     if (!ref.mounted) return;
@@ -775,6 +795,8 @@ class LiveController extends Notifier<LiveUiState> {
     var reconnectVoice = false;
     bool? meetingMode; // Modo A on/off (si aparece set_meeting_mode)
     bool? micActive; // Modo B: mic activo/apagado (si aparece set_microphone)
+    final locationCalls =
+        <String>[]; // get_location: se responde al tener el dato
     final results =
         <
           String,
@@ -832,6 +854,8 @@ class LiveController extends Notifier<LiveUiState> {
         case 'set_microphone':
           micActive = call.args['active'] != false;
           _silenceRequested = false;
+        case 'get_location':
+          locationCalls.add(call.id);
       }
     }
 
@@ -845,10 +869,25 @@ class LiveController extends Notifier<LiveUiState> {
     // La confirmación de entrar o salir del modo reunión sí debe sonar.
     if (meetingMode != null) _allowTurn('entra o sale del modo reunión');
 
-    _session.sendToolResponse([
+    void respond() => _session.sendToolResponse([
       for (final c in toolCall.functionCalls)
         (id: c.id, name: c.name, result: results[c.id] ?? 'ok'),
     ]);
+    if (locationCalls.isEmpty) {
+      respond();
+    } else {
+      // La dirección se busca en el geocodificador: se responde al tenerla.
+      ref.read(locationControllerProvider.notifier).describeForAssistant().then(
+        (where) {
+          if (!ref.mounted) return;
+          for (final id in locationCalls) {
+            results[id] = where;
+          }
+          _log('[Lazarus] ubicación para el asistente: $where');
+          respond();
+        },
+      );
+    }
 
     // Cambiar idioma o voz exige una sesión nueva (ambos se fijan en el setup).
     if (reconnectLang != null || reconnectVoice) {

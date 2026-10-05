@@ -1,11 +1,16 @@
 /// Dobles de prueba de los contratos de `domain` (sin red, audio ni cámara).
 library;
 
+import 'dart:async';
+
 import 'package:app/features/live/domain/entities/live_close.dart';
 import 'package:app/features/live/domain/entities/live_message.dart';
 import 'package:app/features/live/domain/entities/media_permission.dart';
 import 'package:app/features/live/domain/repositories/live_session_repository.dart';
 import 'package:app/features/live/domain/repositories/media_repository.dart';
+import 'package:app/features/location/domain/entities/location_fix.dart';
+import 'package:app/features/location/domain/repositories/location_repository.dart';
+import 'package:app/features/location/domain/repositories/track_recorder.dart';
 
 class FakeLiveSessionRepository implements LiveSessionRepository {
   int connectCalls = 0;
@@ -170,4 +175,51 @@ class FakeMediaRepository implements MediaRepository {
 
   @override
   Future<void> destroyPlayer() async {}
+}
+
+/// GPS falso: el test decide el permiso, emite posiciones y fija la dirección.
+class FakeLocationRepository implements LocationRepository {
+  FakeLocationRepository({
+    this.permission = LocationPermissionStatus.granted,
+    this.address,
+  });
+
+  LocationPermissionStatus permission;
+  String? address;
+  final StreamController<LocationFix> fixes =
+      StreamController<LocationFix>.broadcast();
+  int permissionRequests = 0;
+
+  @override
+  Future<LocationPermissionStatus> requestPermission() async {
+    permissionRequests++;
+    return permission;
+  }
+
+  @override
+  Stream<LocationFix> positions() => fixes.stream;
+
+  @override
+  Future<String?> addressOf(LocationFix fix) async => address;
+}
+
+/// Grabador de recorrido en memoria.
+class FakeTrackRecorder implements TrackRecorder {
+  int segments = 0;
+  bool open = false;
+  final List<({double accuracyM, GpsReliability reliability})> rows = [];
+
+  @override
+  Future<void> begin() async {
+    segments++;
+    open = true;
+  }
+
+  @override
+  void record(LocationFix fix, GpsReliability reliability) {
+    if (open) rows.add((accuracyM: fix.accuracyM, reliability: reliability));
+  }
+
+  @override
+  Future<void> end() async => open = false;
 }
