@@ -1,8 +1,18 @@
 package com.lazarus.app
 
+import android.Manifest
+import android.app.Activity
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.net.Uri
+import android.os.Build
+import android.telephony.SmsManager
 import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -10,6 +20,9 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
     private val channelName = "lazarus/audio"
+    private val emergencyChannelName = "lazarus/emergency"
+    private val smsSentAction = "com.lazarus.app.SMS_SENT"
+    private var smsRequest = 0
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -45,5 +58,100 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        // Alerta SOS (HU-012): SMS con confirmación del sistema y llamadas.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, emergencyChannelName)
+            .setMethodCallHandler { call, result ->
+                val phone = call.argument<String>("phone") ?: ""
+                when (call.method) {
+                    "sendSms" -> sendSms(phone, call.argument<String>("text") ?: "", result)
+                    "call" -> result.success(startCall(phone, direct = true))
+                    "dial" -> result.success(startCall(phone, direct = false))
+                    else -> result.notImplemented()
+                }
+            }
+    }
+
+    /**
+     * Envía el SMS (en varias partes si es largo) y responde "sent" cuando el
+     * sistema confirma todas, o "error:<código>" con la primera que falle.
+     */
+    private fun sendSms(phone: String, text: String, result: MethodChannel.Result) {
+        if (checkSelfPermission(Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
+            result.success("error:sin permiso")
+            return
+        }
+        val sms = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            getSystemService(SmsManager::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            SmsManager.getDefault()
+        }
+        if (sms == null) {
+            result.success("error:sin servicio de SMS")
+            return
+        }
+        val parts = sms.divideMessage(text)
+        val startedAt = System.currentTimeMillis()
+        val action = "$smsSentAction.${smsRequest++}"
+        var pending = parts.size
+        var answered = false
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if (answered) return
+                if (resultCode != Activity.RESULT_OK) {
+                    answered = true
+                    unregisterReceiver(this)
+                    Log.w("LazarusSos", "SMS no enviado: código $resultCode tras ${System.currentTimeMillis() - startedAt} ms")
+                    result.success("error:$resultCode")
+                    return
+                }
+                pending--
+                if (pending == 0) {
+                    answered = true
+                    unregisterReceiver(this)
+                    // Si llega después de que la app dejó de esperar, queda en el log.
+                    Log.i("LazarusSos", "SMS confirmado por la red tras ${System.currentTimeMillis() - startedAt} ms")
+                    result.success("sent")
+                }
+            }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(receiver, IntentFilter(action), Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(receiver, IntentFilter(action))
+        }
+        val sentIntents = ArrayList<PendingIntent>()
+        for (i in parts.indices) {
+            val intent = Intent(action).setPackage(packageName)
+            sentIntents.add(
+                PendingIntent.getBroadcast(this, i, intent, PendingIntent.FLAG_IMMUTABLE),
+            )
+        }
+        try {
+            sms.sendMultipartTextMessage(phone, null, parts, sentIntents, null)
+            Log.i("LazarusSos", "SMS en envío: ${parts.size} parte(s)")
+        } catch (e: Exception) {
+            answered = true
+            unregisterReceiver(receiver)
+            result.success("error:${e.javaClass.simpleName}")
+        }
+    }
+
+    /** Llamada directa si hay permiso; si no (o con `direct = false`), marcador. */
+    private fun startCall(phone: String, direct: Boolean): Boolean {
+        val canCall = direct &&
+            checkSelfPermission(Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED
+        val intent = Intent(
+            if (canCall) Intent.ACTION_CALL else Intent.ACTION_DIAL,
+            Uri.parse("tel:$phone"),
+        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return try {
+            startActivity(intent)
+            true
+        } catch (e: Exception) {
+            Log.w("LazarusSos", "no se pudo llamar: ${e.message}")
+            false
+        }
     }
 }
