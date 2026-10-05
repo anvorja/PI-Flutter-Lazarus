@@ -51,6 +51,10 @@ abstract class LiveSessionRepository {
   /// Tras reactivar el micrófono (salir de silencio total): pide confirmación.
   void sendMicResumed();
 
+  /// Alerta SOS enviada sola (sin respuesta a la confirmación): le pasa el
+  /// resultado al asistente para que se lo diga a la persona.
+  void sendSosResult(String result);
+
   /// Responde a las funciones que pidió el asistente (toolCall). [result] le dice
   /// si se aplicó (`ok`) o por qué no, para que el asistente se lo explique a la
   /// persona con su propia voz.

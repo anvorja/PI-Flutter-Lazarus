@@ -25,6 +25,7 @@ class LocationState {
     this.permission,
     this.fix,
     this.reliability = GpsReliability.unknown,
+    this.lastReliableFix,
   });
 
   /// `null` mientras no se ha pedido el permiso.
@@ -32,14 +33,20 @@ class LocationState {
   final LocationFix? fix;
   final GpsReliability reliability;
 
+  /// Última posición tomada con el GPS confiable: si deja de serlo, es la
+  /// "última posición conocida" que lleva la alerta SOS (HU-012).
+  final LocationFix? lastReliableFix;
+
   LocationState copyWith({
     LocationPermissionStatus? permission,
     LocationFix? fix,
     GpsReliability? reliability,
+    LocationFix? lastReliableFix,
   }) => LocationState(
     permission: permission ?? this.permission,
     fix: fix ?? this.fix,
     reliability: reliability ?? this.reliability,
+    lastReliableFix: lastReliableFix ?? this.lastReliableFix,
   );
 }
 
@@ -139,7 +146,11 @@ class LocationController extends Notifier<LocationState> {
     );
     if (after != before) _logChange(after, fix.accuracyM);
     _track.record(fix, after);
-    state = state.copyWith(fix: fix, reliability: after);
+    state = state.copyWith(
+      fix: fix,
+      reliability: after,
+      lastReliableFix: after == GpsReliability.reliable ? fix : null,
+    );
   }
 
   void _onTick() {

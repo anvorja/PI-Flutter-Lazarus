@@ -3,6 +3,8 @@
 /// nativo de ruta de audio).
 library;
 
+import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../../domain/entities/media_permission.dart';
@@ -10,12 +12,20 @@ import '../../domain/repositories/media_repository.dart';
 import '../datasources/audio_capture_datasource.dart';
 import '../datasources/audio_playback_datasource.dart';
 import '../datasources/audio_route_datasource.dart' as audio_route;
+import '../datasources/frame_archive.dart';
 import '../datasources/video_capture_datasource.dart';
 
 class MediaRepositoryImpl implements MediaRepository {
   AudioStreamer? _audioStreamer;
   AudioPlayer? _audioPlayer;
   VideoStreamer? _videoStreamer;
+
+  /// Evidencia de las pruebas: las fotos de los últimos 10 minutos, solo en
+  /// depuración. En producción no se guarda ninguna.
+  final FrameArchive? _archive = kDebugMode
+      ? FrameArchive(getApplicationSupportDirectory)
+      : null;
+  bool _cacheCleaned = false;
 
   @override
   Future<MediaAccess> requestPermissions() async {
@@ -55,7 +65,15 @@ class MediaRepositoryImpl implements MediaRepository {
     void Function(String base64Jpeg) onFrame, {
     int fps = 1,
   }) async {
-    final streamer = VideoStreamer(onFrame);
+    if (!_cacheCleaned) {
+      _cacheCleaned = true;
+      final cache = await getTemporaryDirectory();
+      final deleted = await deleteLeftoverCaptures(cache);
+      if (deleted > 0) {
+        debugPrint('[Lazarus] cámara: $deleted fotos viejas borradas');
+      }
+    }
+    final streamer = VideoStreamer(onFrame, archive: _archive);
     _videoStreamer = streamer;
     await streamer.start(fps: fps);
   }

@@ -17,6 +17,9 @@ import '../../domain/entities/media_permission.dart';
 import '../../domain/repositories/live_session_repository.dart';
 import '../../domain/repositories/live_settings_repository.dart';
 import '../../domain/repositories/media_repository.dart';
+import '../../../emergency/domain/repositories/emergency_repository.dart';
+import '../../../emergency/presentation/controllers/sos_controller.dart';
+import '../../../emergency/presentation/providers/emergency_providers.dart';
 import '../../../location/presentation/providers/location_providers.dart';
 import '../providers/live_providers.dart';
 
@@ -125,6 +128,11 @@ enum LiveNotice {
   permissionDenied,
   permissionBlocked,
   stopped,
+
+  /// Alerta SOS enviada sola con la sesión ya cerrada (no hay asistente que lo
+  /// diga).
+  sosSent,
+  sosFailed,
 }
 
 /// Avisos informativos que la persona puede silenciar por voz (`set_system_cues`).
@@ -152,6 +160,10 @@ const Map<String, Map<LiveNotice, String>> _notices = {
     LiveNotice.permissionBlocked:
         'El permiso de micrófono está desactivado. Toca la pantalla para abrir los ajustes y activarlo.',
     LiveNotice.stopped: 'Asistente detenido.',
+    LiveNotice.sosSent:
+        'Alerta enviada a tu contacto de emergencia. Detente en un lugar seguro y espera.',
+    LiveNotice.sosFailed:
+        'No se pudo enviar la alerta. Pide ayuda a alguien cerca o llama al 123.',
   },
   'en': {
     LiveNotice.retrying: 'I lost the connection to the server. Retrying.',
@@ -170,6 +182,10 @@ const Map<String, Map<LiveNotice, String>> _notices = {
     LiveNotice.permissionBlocked:
         'Microphone permission is turned off. Tap the screen to open settings and turn it on.',
     LiveNotice.stopped: 'Assistant stopped.',
+    LiveNotice.sosSent:
+        'Alert sent to your emergency contact. Stop in a safe place and wait.',
+    LiveNotice.sosFailed:
+        'The alert could not be sent. Ask someone nearby for help or call 123.',
   },
   'fr': {
     LiveNotice.retrying: 'J\'ai perdu la connexion au serveur. Nouvel essai.',
@@ -188,6 +204,10 @@ const Map<String, Map<LiveNotice, String>> _notices = {
     LiveNotice.permissionBlocked:
         'L\'accès au micro est désactivé. Touchez l\'écran pour ouvrir les réglages et l\'activer.',
     LiveNotice.stopped: 'Assistant arrêté.',
+    LiveNotice.sosSent:
+        'Alerte envoyée à ton contact d\'urgence. Arrête-toi dans un endroit sûr et attends.',
+    LiveNotice.sosFailed:
+        'L\'alerte n\'a pas pu être envoyée. Demande de l\'aide à quelqu\'un à côté ou appelle le 123.',
   },
   'pt': {
     LiveNotice.retrying: 'Perdi a conexão com o servidor. Tentando de novo.',
@@ -206,6 +226,10 @@ const Map<String, Map<LiveNotice, String>> _notices = {
     LiveNotice.permissionBlocked:
         'A permissão de microfone está desativada. Toque na tela para abrir os ajustes e ativá-la.',
     LiveNotice.stopped: 'Assistente parado.',
+    LiveNotice.sosSent:
+        'Alerta enviado ao seu contato de emergência. Pare em um lugar seguro e espere.',
+    LiveNotice.sosFailed:
+        'Não foi possível enviar o alerta. Peça ajuda a alguém por perto ou ligue para o 123.',
   },
   'it': {
     LiveNotice.retrying: 'Ho perso la connessione al server. Riprovo.',
@@ -224,6 +248,10 @@ const Map<String, Map<LiveNotice, String>> _notices = {
     LiveNotice.permissionBlocked:
         'Il permesso del microfono è disattivato. Tocca lo schermo per aprire le impostazioni e attivarlo.',
     LiveNotice.stopped: 'Assistente fermato.',
+    LiveNotice.sosSent:
+        'Avviso inviato al tuo contatto di emergenza. Fermati in un luogo sicuro e aspetta.',
+    LiveNotice.sosFailed:
+        'Non è stato possibile inviare l\'avviso. Chiedi aiuto a qualcuno vicino o chiama il 123.',
   },
 };
 
@@ -339,12 +367,20 @@ class LiveController extends Notifier<LiveUiState> {
   /// `set_microphone`, la app lo aplica igual al terminar su turno (privacidad).
   bool _silenceRequested = false;
 
+  /// Acciones que esperan a que suene la próxima respuesta del asistente: la
+  /// cuenta de la confirmación SOS arranca cuando termina la pregunta, y una
+  /// llamada empieza cuando el asistente terminó de avisarla.
+  final List<void Function()> _afterSpeech = [];
+  bool _afterSpeechHeard = false; // ya sonó audio de esa respuesta
+  Timer? _afterSpeechFallback;
+
   @override
   LiveUiState build() {
     _session = ref.read(liveSessionRepositoryProvider);
     _media = ref.read(mediaRepositoryProvider);
     _settings = ref.read(liveSettingsRepositoryProvider);
     ref.onDispose(_teardown);
+    ref.onDispose(() => _afterSpeechFallback?.cancel());
     // Español por defecto; si la persona cambió el idioma por voz, se conserva.
     return LiveUiState(language: _settings.getLanguage());
   }
@@ -616,6 +652,8 @@ class LiveController extends Notifier<LiveUiState> {
         _log('[Lazarus] te escuché (transcripción): "${t.text}"');
         state = state.copyWith(userTranscript: t.text);
         _remember(t.text);
+        // Está respondiendo a "¿Envío la alerta…?": la cuenta espera.
+        ref.read(sosControllerProvider.notifier).personSpoke();
         if (asksTotalSilence(_recentHeard())) _silenceRequested = true;
         if (_heldAudio.isNotEmpty && _calledByName()) {
           _allowTurn('lo llamaron por su nombre');
@@ -688,6 +726,7 @@ class LiveController extends Notifier<LiveUiState> {
   /// Reproduce un fragmento de audio del asistente (en altavoz cierra el mic).
   void _playAssistantAudio(String pcm) {
     _audioInChunks++;
+    if (_afterSpeech.isNotEmpty) _afterSpeechHeard = true;
     if (_audioInChunks == 1) {
       _log(
         '[Lazarus] audio del asistente: primer chunk recibido → reproduciendo',
@@ -696,6 +735,8 @@ class LiveController extends Notifier<LiveUiState> {
     // El asistente está sonando → en altavoz, cierra el mic (anti-eco).
     if (!_assistantActive) {
       _log('[Lazarus] asistente: INICIA turno de audio');
+      // Mientras habla, la persona no puede contestar a "¿Envío la alerta…?".
+      ref.read(sosControllerProvider.notifier).assistantSpeaking();
     }
     _assistantActive = true;
     _assistantTurnDone = false;
@@ -777,6 +818,59 @@ class LiveController extends Notifier<LiveUiState> {
     _drainFallback?.cancel();
     _assistantActive = false;
     if (_onSpeaker) _log('[Lazarus] mic: reabierto ($reason)');
+    ref.read(sosControllerProvider.notifier).assistantFinished();
+    if (_afterSpeechHeard) _runAfterSpeech();
+  }
+
+  /// Ejecuta [action] cuando termine de sonar la próxima respuesta del
+  /// asistente, o pasado el tiempo de respaldo si no llega a sonar.
+  void _whenAssistantFinishes(void Function() action) {
+    _afterSpeech.add(action);
+    _afterSpeechFallback?.cancel();
+    _afterSpeechFallback = Timer(
+      ref.read(sosQuestionFallbackProvider),
+      _runAfterSpeech,
+    );
+  }
+
+  void _runAfterSpeech() {
+    _afterSpeechFallback?.cancel();
+    _afterSpeechFallback = null;
+    _afterSpeechHeard = false;
+    final actions = List.of(_afterSpeech);
+    _afterSpeech.clear();
+    for (final action in actions) {
+      action();
+    }
+  }
+
+  /// La alerta se envió sola (nadie respondió a la confirmación): el asistente
+  /// lo dice; si la sesión ya no está, lo dice la voz del teléfono.
+  void _onSosAutoSent(String result) {
+    if (!ref.mounted) return;
+    if (_session.connected && state.status == LiveStatus.connected) {
+      _turnAllowed = true; // debe sonar aunque esté en modo reunión
+      _session.sendSosResult(result);
+    } else {
+      _announce(
+        result.startsWith('sent') ? LiveNotice.sosSent : LiveNotice.sosFailed,
+      );
+    }
+  }
+
+  /// Llamada telefónica: el asistente se pausa (libera micrófono y altavoz) y
+  /// al volver basta tocar la pantalla para retomar con una confirmación corta.
+  void _startCall(CallTarget to) {
+    if (!ref.mounted) return;
+    _log('[Lazarus] llamada (${to.name}): asistente en pausa');
+    _teardown();
+    if (_everConnected) _pendingKickoff = _PendingKickoff.micOn;
+    state = state.copyWith(
+      status: LiveStatus.idle,
+      meetingMode: false,
+      micMuted: false,
+    );
+    ref.read(sosControllerProvider.notifier).placeCall(to);
   }
 
   void _logAssistantSaid([String note = '']) {
@@ -795,8 +889,9 @@ class LiveController extends Notifier<LiveUiState> {
     var reconnectVoice = false;
     bool? meetingMode; // Modo A on/off (si aparece set_meeting_mode)
     bool? micActive; // Modo B: mic activo/apagado (si aparece set_microphone)
-    final locationCalls =
-        <String>[]; // get_location: se responde al tener el dato
+    // Funciones que tardan (GPS, SMS, permisos): se responde al terminar todas.
+    final waits = <Future<void>>[];
+    final sos = ref.read(sosControllerProvider.notifier);
     final results =
         <
           String,
@@ -855,7 +950,49 @@ class LiveController extends Notifier<LiveUiState> {
           micActive = call.args['active'] != false;
           _silenceRequested = false;
         case 'get_location':
-          locationCalls.add(call.id);
+          // La dirección se busca en el geocodificador.
+          waits.add(
+            ref
+                .read(locationControllerProvider.notifier)
+                .describeForAssistant()
+                .then((where) {
+                  _log('[Lazarus] ubicación para el asistente: $where');
+                  results[call.id] = where;
+                }),
+          );
+        case 'set_emergency_contact':
+          waits.add(
+            sos
+                .setContact(
+                  (call.args['name'] ?? '').toString(),
+                  (call.args['phone'] ?? '').toString(),
+                )
+                .then((r) => results[call.id] = r),
+          );
+        case 'trigger_sos':
+          // La pregunta de confirmación y el resultado deben sonar siempre.
+          _allowTurn('alerta SOS');
+          waits.add(
+            sos.trigger().then((r) {
+              _log('[Lazarus] SOS para el asistente: $r');
+              results[call.id] = r;
+              if (ref.read(sosControllerProvider) ==
+                  SosStatus.awaitingConfirmation) {
+                _whenAssistantFinishes(
+                  () => sos.startCountdown(_onSosAutoSent),
+                );
+              }
+            }),
+          );
+        case 'cancel_sos':
+          results[call.id] = sos.cancel();
+        case 'call_phone':
+          final to = call.args['to'] == 'emergency'
+              ? CallTarget.emergency
+              : CallTarget.contact;
+          final r = sos.prepareCall(to);
+          results[call.id] = r;
+          if (r.startsWith('ok')) _whenAssistantFinishes(() => _startCall(to));
       }
     }
 
@@ -873,20 +1010,12 @@ class LiveController extends Notifier<LiveUiState> {
       for (final c in toolCall.functionCalls)
         (id: c.id, name: c.name, result: results[c.id] ?? 'ok'),
     ]);
-    if (locationCalls.isEmpty) {
+    if (waits.isEmpty) {
       respond();
     } else {
-      // La dirección se busca en el geocodificador: se responde al tenerla.
-      ref.read(locationControllerProvider.notifier).describeForAssistant().then(
-        (where) {
-          if (!ref.mounted) return;
-          for (final id in locationCalls) {
-            results[id] = where;
-          }
-          _log('[Lazarus] ubicación para el asistente: $where');
-          respond();
-        },
-      );
+      Future.wait(waits).then((_) {
+        if (ref.mounted) respond();
+      });
     }
 
     // Cambiar idioma o voz exige una sesión nueva (ambos se fijan en el setup).
