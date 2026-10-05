@@ -32,6 +32,10 @@ const String languageChangedTrigger = '[IDIOMA]';
 /// asistente da una confirmación muy corta (lo interpreta el system prompt).
 const String micOnTrigger = '[MIC_ON]';
 
+/// Sentinela de la alerta SOS enviada sola, seguida de su resultado (lo
+/// interpreta el system prompt).
+const String sosTrigger = '[SOS]';
+
 /// Opciones de conexión del cliente Live.
 class GeminiLiveClientOptions {
   const GeminiLiveClientOptions({
@@ -220,6 +224,9 @@ class GeminiLiveClient {
 
   /// Tras reactivar el micrófono (salir de silencio total): pide confirmación.
   void sendMicResumed() => sendText(micOnTrigger);
+
+  /// Alerta SOS enviada sin confirmación: el asistente comunica el resultado.
+  void sendSosResult(String result) => sendText('$sosTrigger $result');
 
   /// Responde a las funciones que pidió Gemini (toolCall).
   void sendToolResponse(List<({String id, String name, String result})> calls) {

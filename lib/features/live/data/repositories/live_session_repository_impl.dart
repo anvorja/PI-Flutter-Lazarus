@@ -84,6 +84,9 @@ class LiveSessionRepositoryImpl implements LiveSessionRepository {
   void sendMicResumed() => _client?.sendMicResumed();
 
   @override
+  void sendSosResult(String result) => _client?.sendSosResult(result);
+
+  @override
   void sendToolResponse(
     List<({String id, String name, String result})> calls,
   ) => _client?.sendToolResponse(calls);

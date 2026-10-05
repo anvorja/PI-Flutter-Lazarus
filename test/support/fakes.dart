@@ -3,6 +3,8 @@ library;
 
 import 'dart:async';
 
+import 'package:app/features/emergency/domain/entities/emergency_contact.dart';
+import 'package:app/features/emergency/domain/repositories/emergency_repository.dart';
 import 'package:app/features/live/domain/entities/live_close.dart';
 import 'package:app/features/live/domain/entities/live_message.dart';
 import 'package:app/features/live/domain/entities/media_permission.dart';
@@ -103,6 +105,11 @@ class FakeLiveSessionRepository implements LiveSessionRepository {
 
   @override
   void sendMicResumed() => micResumed++;
+
+  final List<String> sosResults = [];
+
+  @override
+  void sendSosResult(String result) => sosResults.add(result);
 
   final List<({String id, String name, String result})> toolResponses = [];
 
@@ -222,4 +229,48 @@ class FakeTrackRecorder implements TrackRecorder {
 
   @override
   Future<void> end() async => open = false;
+}
+
+/// Alerta SOS falsa: guarda el contacto en memoria y registra SMS y llamadas.
+class FakeEmergencyRepository implements EmergencyRepository {
+  FakeEmergencyRepository({this.contact});
+
+  EmergencyContact? contact;
+  bool smsPermission = true;
+  SmsResult smsResult = SmsResult.sent;
+  int permissionRequests = 0;
+  final List<({String phone, String text})> sms = [];
+  final List<String> calls = [];
+  final List<String> dials = [];
+
+  @override
+  EmergencyContact? getContact() => contact;
+
+  @override
+  Future<void> setContact(EmergencyContact contact) async =>
+      this.contact = contact;
+
+  @override
+  Future<bool> requestPermissions() async {
+    permissionRequests++;
+    return smsPermission;
+  }
+
+  @override
+  Future<SmsResult> sendSms(String phone, String text) async {
+    sms.add((phone: phone, text: text));
+    return smsResult;
+  }
+
+  @override
+  Future<bool> call(String phone) async {
+    calls.add(phone);
+    return true;
+  }
+
+  @override
+  Future<bool> dial(String number) async {
+    dials.add(number);
+    return true;
+  }
 }

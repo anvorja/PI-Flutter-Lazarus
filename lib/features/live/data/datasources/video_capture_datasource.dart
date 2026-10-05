@@ -8,18 +8,25 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
+
+import 'frame_archive.dart';
 
 class VideoStreamer {
   VideoStreamer(
     this._onFrame, {
     Future<List<CameraDescription>> Function()? listCameras,
+    this.archive,
   }) : _listCameras = listCameras ?? availableCameras;
 
   final void Function(String base64Jpeg) _onFrame;
   final Future<List<CameraDescription>> Function() _listCameras;
+
+  /// Copia de las fotos recientes como evidencia (solo en depuración).
+  final FrameArchive? archive;
 
   CameraController? _controller;
   Timer? _timer;
@@ -72,7 +79,13 @@ class VideoStreamer {
     try {
       final file = await controller.takePicture();
       final bytes = await file.readAsBytes();
-      if (_streaming && bytes.isNotEmpty) _onFrame(base64Encode(bytes));
+      // La cámara guarda cada foto en la caché y no la borra: una por segundo
+      // llenaba el teléfono (194 MB en la prueba de CP-LAZA-39).
+      unawaited(_deleteQuietly(file.path));
+      if (_streaming && bytes.isNotEmpty) {
+        _onFrame(base64Encode(bytes));
+        unawaited(archive?.keep(bytes));
+      }
     } catch (_) {
       // Frame perdido: lo ignoramos y seguimos con el siguiente.
     } finally {
@@ -94,6 +107,14 @@ class VideoStreamer {
       }
     }, (e, _) => debugPrint('[Lazarus] cámara tras el cierre: $e'));
     return done.future;
+  }
+
+  Future<void> _deleteQuietly(String path) async {
+    try {
+      await File(path).delete();
+    } catch (_) {
+      // Ya no estaba: nada que hacer.
+    }
   }
 
   Future<void> stop() async {
