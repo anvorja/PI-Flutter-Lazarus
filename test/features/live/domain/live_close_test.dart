@@ -7,6 +7,7 @@ void main() {
     expect(liveCloseCauseFromCode(4002), LiveCloseCause.upstreamError);
     expect(liveCloseCauseFromCode(4003), LiveCloseCause.quotaExceeded);
     expect(liveCloseCauseFromCode(4004), LiveCloseCause.serverMisconfigured);
+    expect(liveCloseCauseFromCode(4005), LiveCloseCause.billingExhausted);
     expect(liveCloseCauseFromCode(1008), LiveCloseCause.protocolError);
     expect(liveCloseCauseFromCode(1006), LiveCloseCause.unknown);
     expect(liveCloseCauseFromCode(null), LiveCloseCause.unknown);

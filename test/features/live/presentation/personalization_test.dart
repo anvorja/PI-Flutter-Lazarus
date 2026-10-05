@@ -6,6 +6,7 @@ library;
 import 'package:app/features/live/domain/entities/live_message.dart';
 import 'package:app/features/live/presentation/controllers/live_controller.dart';
 import 'package:app/features/live/presentation/providers/live_providers.dart';
+import 'package:app/features/location/presentation/providers/location_providers.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -27,6 +28,8 @@ void main() {
         sharedPreferencesProvider.overrideWithValue(prefs),
         liveSessionRepositoryProvider.overrideWithValue(session),
         mediaRepositoryProvider.overrideWithValue(FakeMediaRepository()),
+        locationRepositoryProvider.overrideWithValue(FakeLocationRepository()),
+        trackRecorderProvider.overrideWithValue(FakeTrackRecorder()),
         announcerProvider.overrideWithValue((m, _) => announcements.add(m)),
         retryDelayProvider.overrideWithValue((_) => Duration.zero),
       ],

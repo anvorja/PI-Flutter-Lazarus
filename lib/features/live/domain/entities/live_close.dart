@@ -15,6 +15,10 @@ enum LiveCloseCause {
   /// El servidor no está configurado (sin API key).
   serverMisconfigured,
 
+  /// El proyecto del servicio de IA se quedó sin saldo: no se arregla
+  /// reintentando, alguien tiene que recargarlo.
+  billingExhausted,
+
   /// La app envió un primer frame inválido o tardó demasiado.
   protocolError,
 
@@ -28,6 +32,7 @@ LiveCloseCause liveCloseCauseFromCode(int? code) => switch (code) {
   4002 => LiveCloseCause.upstreamError,
   4003 => LiveCloseCause.quotaExceeded,
   4004 => LiveCloseCause.serverMisconfigured,
+  4005 => LiveCloseCause.billingExhausted,
   1008 => LiveCloseCause.protocolError,
   _ => LiveCloseCause.unknown,
 };

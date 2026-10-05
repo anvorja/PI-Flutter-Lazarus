@@ -16,6 +16,8 @@ Proyecto gestionado en Jira (proyecto **LAZA**). Cada cambio entra por una rama
 | Arquitectura | Capas `data` / `domain` / `presentation` con Riverpod |
 | Audio | `record` (captura PCM 16 kHz), `flutter_pcm_sound` (reproducción PCM 24 kHz) |
 | Cámara | `camera` (JPEG ~1 fps) |
+| Ubicación | `geolocator` (posición cada 2 s con estado de confiabilidad), `geocoding` (dirección aproximada) |
+| Pantalla | `wakelock_plus` (encendida mientras el GPS sigue a la persona) |
 | Persistencia de ajustes | `shared_preferences` |
 
 ## Ejecutar

@@ -1,6 +1,7 @@
 import 'package:app/features/live/presentation/controllers/live_controller.dart';
 import 'package:app/features/live/presentation/pages/live_home_page.dart';
 import 'package:app/features/live/presentation/providers/live_providers.dart';
+import 'package:app/features/location/presentation/providers/location_providers.dart';
 import 'package:app/main.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -27,6 +28,10 @@ void main() {
           sharedPreferencesProvider.overrideWithValue(prefs),
           liveSessionRepositoryProvider.overrideWithValue(session),
           mediaRepositoryProvider.overrideWithValue(media),
+          locationRepositoryProvider.overrideWithValue(
+            FakeLocationRepository(),
+          ),
+          trackRecorderProvider.overrideWithValue(FakeTrackRecorder()),
           announcerProvider.overrideWithValue((m, _) => announcements.add(m)),
         ],
         child: const LazarusApp(),
