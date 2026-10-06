@@ -11,9 +11,9 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:camera/camera.dart';
-import 'package:flutter/foundation.dart';
 
 import 'frame_archive.dart';
+import '../../../../core/debug/live_debug.dart';
 
 class VideoStreamer {
   VideoStreamer(
@@ -105,7 +105,7 @@ class VideoStreamer {
       } catch (e, st) {
         done.completeError(e, st);
       }
-    }, (e, _) => debugPrint('[Lazarus] cámara tras el cierre: $e'));
+    }, (e, _) => liveLog('[Lazarus] cámara tras el cierre: $e'));
     return done.future;
   }
 

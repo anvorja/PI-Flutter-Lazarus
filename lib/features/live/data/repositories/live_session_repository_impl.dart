@@ -87,6 +87,10 @@ class LiveSessionRepositoryImpl implements LiveSessionRepository {
   void sendSosResult(String result) => _client?.sendSosResult(result);
 
   @override
+  void sendObserve({bool risksOnly = false}) =>
+      _client?.sendObserve(risksOnly: risksOnly);
+
+  @override
   void sendToolResponse(
     List<({String id, String name, String result})> calls,
   ) => _client?.sendToolResponse(calls);

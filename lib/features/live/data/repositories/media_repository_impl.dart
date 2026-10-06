@@ -14,6 +14,7 @@ import '../datasources/audio_playback_datasource.dart';
 import '../datasources/audio_route_datasource.dart' as audio_route;
 import '../datasources/frame_archive.dart';
 import '../datasources/video_capture_datasource.dart';
+import '../../../../core/debug/live_debug.dart';
 
 class MediaRepositoryImpl implements MediaRepository {
   AudioStreamer? _audioStreamer;
@@ -70,7 +71,7 @@ class MediaRepositoryImpl implements MediaRepository {
       final cache = await getTemporaryDirectory();
       final deleted = await deleteLeftoverCaptures(cache);
       if (deleted > 0) {
-        debugPrint('[Lazarus] cámara: $deleted fotos viejas borradas');
+        liveLog('[Lazarus] cámara: $deleted fotos viejas borradas');
       }
     }
     final streamer = VideoStreamer(onFrame, archive: _archive);

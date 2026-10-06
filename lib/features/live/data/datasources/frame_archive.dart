@@ -9,6 +9,7 @@ library;
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import '../../../../core/debug/live_debug.dart';
 
 const String framesFolder = 'frames';
 
@@ -38,7 +39,7 @@ class FrameArchive {
       }
     } catch (e) {
       // Sin espacio o sin acceso: la evidencia no debe tumbar la cámara.
-      debugPrint('[Lazarus] fotos de evidencia: $e');
+      liveLog('[Lazarus] fotos de evidencia: $e');
     }
   }
 

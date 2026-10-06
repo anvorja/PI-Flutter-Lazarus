@@ -10,12 +10,11 @@ library;
 
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart';
-
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as ws_status;
 
 import '../../domain/entities/live_message.dart';
+import '../../../../core/debug/live_debug.dart';
 
 /// Sentinela que dispara el saludo de arranque (lo interpreta el system prompt).
 const String kickoffTrigger = '[INICIO]';
@@ -35,6 +34,14 @@ const String micOnTrigger = '[MIC_ON]';
 /// Sentinela de la alerta SOS enviada sola, seguida de su resultado (lo
 /// interpreta el system prompt).
 const String sosTrigger = '[SOS]';
+
+/// Sentinela del ciclo de observación (HU-040): mientras nadie habla, la app lo
+/// envía cada pocos segundos para que el asistente mire la imagen y avise de un
+/// riesgo sin que la persona le hable (lo interpreta el system prompt).
+const String observeTrigger = '[OBSERVA]';
+
+/// Igual que [observeTrigger] con las descripciones en pausa: solo riesgos.
+const String observeRisksTrigger = '[OBSERVA_RIESGOS]';
 
 /// Opciones de conexión del cliente Live.
 class GeminiLiveClientOptions {
@@ -168,7 +175,7 @@ class GeminiLiveClient {
       final responses = parseLiveMessages(raw);
       // Diagnóstico: antes solo se procesaba el primer evento de cada frame.
       if (responses.length > 1) {
-        debugPrint(
+        liveLog(
           '[Lazarus] frame con varios eventos: '
           '${responses.map((r) => r.type.name).join(' + ')}',
         );
@@ -227,6 +234,15 @@ class GeminiLiveClient {
 
   /// Alerta SOS enviada sin confirmación: el asistente comunica el resultado.
   void sendSosResult(String result) => sendText('$sosTrigger $result');
+
+  /// Ciclo de observación: va por el mismo flujo de la cámara
+  /// (`realtime_input`). Enviado como `client_content`, el modelo responde sin
+  /// mirar las fotos del flujo (spike de HU-041).
+  void sendObserve({bool risksOnly = false}) => _send({
+    'realtime_input': {
+      'text': risksOnly ? observeRisksTrigger : observeTrigger,
+    },
+  });
 
   /// Responde a las funciones que pidió Gemini (toolCall).
   void sendToolResponse(List<({String id, String name, String result})> calls) {

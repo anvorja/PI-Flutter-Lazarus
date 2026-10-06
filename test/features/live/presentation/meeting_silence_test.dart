@@ -174,6 +174,48 @@ void main() {
     });
   });
 
+  group('pausar o reanudar descripciones aunque no llame a la función', () {
+    // CP-LAZA-107: "deja escribir" y "vuelve a escribir" → "Entendido" sin
+    // set_descriptions.
+    test('la app guarda la pausa al terminar el turno', () async {
+      await heard('Deja escribir.');
+      emit(LiveResponseType.turnComplete);
+      await settle();
+      expect(
+        container.read(liveSettingsRepositoryProvider).getDescribing(),
+        isFalse,
+      );
+      expect(
+        logs,
+        contains(
+          '[Lazarus] descripciones en pausa por la app (el asistente no llamó a set_descriptions)',
+        ),
+      );
+    });
+
+    test('y la reanudación', () async {
+      await heard('Deja de describir.');
+      await toolCall('set_descriptions', {'enabled': false});
+      emit(LiveResponseType.turnComplete);
+      await settle();
+      await heard('Vuelve a escribir.');
+      emit(LiveResponseType.turnComplete);
+      await settle();
+      expect(
+        container.read(liveSettingsRepositoryProvider).getDescribing(),
+        isTrue,
+      );
+    });
+
+    test('si llamó a la función, la app no hace nada más', () async {
+      await heard('Deja de describir.');
+      await toolCall('set_descriptions', {'enabled': false});
+      emit(LiveResponseType.turnComplete);
+      await settle();
+      expect(logs.where((l) => l.contains('por la app')), isEmpty);
+    });
+  });
+
   group('silencio total aunque el asistente no llame a la función', () {
     test('la app lo aplica al terminar el turno (CP-LAZA-37, paso H)', () async {
       await heard('Silencio total.');

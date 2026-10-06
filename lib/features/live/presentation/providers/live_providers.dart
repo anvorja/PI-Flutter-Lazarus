@@ -18,6 +18,8 @@ import '../../domain/repositories/live_session_repository.dart';
 import '../../domain/repositories/live_settings_repository.dart';
 import '../../domain/repositories/media_repository.dart';
 import '../controllers/live_controller.dart';
+import '../../../../core/debug/live_debug.dart';
+import '../../../../core/telemetry/session_telemetry.dart';
 
 /// La instancia de `SharedPreferences` ya cargada. Debe sobrescribirse en
 /// `main()` con `overrideWithValue` una vez resuelto el `Future` inicial
@@ -77,7 +79,7 @@ final announcerProvider =
             .setLanguage(_ttsLocales[language] ?? _ttsLocales['es']!)
             .then((_) => tts.speak(message))
             .catchError((Object e) {
-              debugPrint('[Lazarus] aviso sin voz: $e');
+              liveLog('[Lazarus] aviso sin voz: $e');
               return null;
             });
       };
@@ -93,6 +95,45 @@ final retryDelayProvider = Provider<Duration Function(int attempt)>((ref) {
 /// duración estimada del audio pendiente más este margen.
 final drainFallbackMarginProvider = Provider<Duration>(
   (ref) => const Duration(milliseconds: 1500),
+);
+
+/// Telemetría de sesión (HU-015): eventos y latencias sin contenido de la
+/// persona. En la app va a `files/telemetry.jsonl` (ver `main.dart`); por
+/// defecto, en pruebas, no se escribe en ningún lado.
+final sessionTelemetryProvider = Provider<SessionTelemetry>(
+  (ref) => SessionTelemetry((_) {}),
+);
+
+/// Nivel RMS del micrófono a partir del cual se considera que la persona habla
+/// (para medir la latencia voz a voz).
+final voiceLevelThresholdProvider = Provider<double>((ref) => 0.04);
+
+/// Ciclo de observación (HU-040): cada cuánto, con todos callados, la app le
+/// pide al asistente que mire la imagen y avise si hay un riesgo.
+/// 2 s: en la prueba del 6 de octubre, con 3 s más la respuesta (≈ 2,7 s) un
+/// aviso llegaba hasta 7 s después de que el obstáculo apareció en la cámara.
+final observePeriodProvider = Provider<Duration>(
+  (ref) => const Duration(seconds: 2),
+);
+
+/// Tras la voz de la persona, cuánto se espera su respuesta antes de volver a
+/// observar. `[OBSERVA]` cuenta como actividad para Gemini: enviado mientras el
+/// asistente prepara una respuesta, la interrumpe (prueba del 6 de octubre:
+/// "vuelve a describir" quedó cortado y sin aplicar). La latencia voz a voz
+/// medida llegó a 6 s.
+final observeReplyWaitProvider = Provider<Duration>(
+  (ref) => const Duration(seconds: 12),
+);
+
+/// Pausa tras una respuesta a la persona antes de volver a observar: suele
+/// seguir hablando (en la prueba, preguntas seguidas por la licuadora).
+final observeAfterReplyProvider = Provider<Duration>(
+  (ref) => const Duration(seconds: 4),
+);
+
+/// Si tras un `[OBSERVA]` el asistente no responde en este tiempo, calló.
+final observeTimeoutProvider = Provider<Duration>(
+  (ref) => const Duration(seconds: 8),
 );
 
 final liveControllerProvider = NotifierProvider<LiveController, LiveUiState>(

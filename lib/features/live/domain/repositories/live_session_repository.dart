@@ -55,6 +55,11 @@ abstract class LiveSessionRepository {
   /// resultado al asistente para que se lo diga a la persona.
   void sendSosResult(String result);
 
+  /// Ciclo de observación: pide al asistente que mire la imagen actual y avise
+  /// solo si hay un riesgo o algo nuevo (HU-040).
+  /// Con [risksOnly] (descripciones en pausa), solo debe avisar de riesgos.
+  void sendObserve({bool risksOnly = false});
+
   /// Responde a las funciones que pidió el asistente (toolCall). [result] le dice
   /// si se aplicó (`ok`) o por qué no, para que el asistente se lo explique a la
   /// persona con su propia voz.

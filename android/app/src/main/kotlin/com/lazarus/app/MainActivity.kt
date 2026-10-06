@@ -7,6 +7,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
@@ -19,6 +20,19 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    /// Trazas de diagnóstico solo en builds de depuración (HU-015).
+    private val debugBuild: Boolean
+        get() = (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+
+    private fun debugLog(level: Char, tag: String, message: String) {
+        if (!debugBuild) return
+        when (level) {
+            'w' -> Log.w(tag, message)
+            'i' -> Log.i(tag, message)
+            else -> Log.d(tag, message)
+        }
+    }
+
     private val channelName = "lazarus/audio"
     private val emergencyChannelName = "lazarus/emergency"
     private val smsSentAction = "com.lazarus.app.SMS_SENT"
@@ -35,7 +49,7 @@ class MainActivity : FlutterActivity() {
                     "isHeadsetConnected" -> {
                         val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
                         val devices = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-                        Log.d("LazarusAudio", "salidas: " + devices.joinToString { it.type.toString() })
+                        debugLog('d', "LazarusAudio", "salidas: " + devices.joinToString { it.type.toString() })
                         val connected = devices.any { d ->
                             when (d.type) {
                                 AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
@@ -102,7 +116,7 @@ class MainActivity : FlutterActivity() {
                 if (resultCode != Activity.RESULT_OK) {
                     answered = true
                     unregisterReceiver(this)
-                    Log.w("LazarusSos", "SMS no enviado: código $resultCode tras ${System.currentTimeMillis() - startedAt} ms")
+                    debugLog('w', "LazarusSos", "SMS no enviado: código $resultCode tras ${System.currentTimeMillis() - startedAt} ms")
                     result.success("error:$resultCode")
                     return
                 }
@@ -111,7 +125,7 @@ class MainActivity : FlutterActivity() {
                     answered = true
                     unregisterReceiver(this)
                     // Si llega después de que la app dejó de esperar, queda en el log.
-                    Log.i("LazarusSos", "SMS confirmado por la red tras ${System.currentTimeMillis() - startedAt} ms")
+                    debugLog('i', "LazarusSos", "SMS confirmado por la red tras ${System.currentTimeMillis() - startedAt} ms")
                     result.success("sent")
                 }
             }
@@ -130,7 +144,7 @@ class MainActivity : FlutterActivity() {
         }
         try {
             sms.sendMultipartTextMessage(phone, null, parts, sentIntents, null)
-            Log.i("LazarusSos", "SMS en envío: ${parts.size} parte(s)")
+            debugLog('i', "LazarusSos", "SMS en envío: ${parts.size} parte(s)")
         } catch (e: Exception) {
             answered = true
             unregisterReceiver(receiver)
@@ -150,7 +164,7 @@ class MainActivity : FlutterActivity() {
             startActivity(intent)
             true
         } catch (e: Exception) {
-            Log.w("LazarusSos", "no se pudo llamar: ${e.message}")
+            debugLog('w', "LazarusSos", "no se pudo llamar: ${e.message}")
             false
         }
     }

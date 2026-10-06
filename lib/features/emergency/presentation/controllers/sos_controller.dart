@@ -10,7 +10,6 @@ library;
 
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../live/presentation/providers/live_providers.dart';
@@ -22,8 +21,9 @@ import '../../domain/entities/emergency_contact.dart';
 import '../../domain/entities/sos_message.dart';
 import '../../domain/repositories/emergency_repository.dart';
 import '../providers/emergency_providers.dart';
+import '../../../../core/debug/live_debug.dart';
 
-void _log(String message) => debugPrint(message);
+void _log(String message) => liveLog(message);
 
 /// Línea oficial de emergencias de Colombia.
 const String emergencyLineNumber = '123';
