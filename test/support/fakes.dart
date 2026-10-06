@@ -111,6 +111,15 @@ class FakeLiveSessionRepository implements LiveSessionRepository {
   @override
   void sendSosResult(String result) => sosResults.add(result);
 
+  int observes = 0;
+  final List<bool> observeRisksOnly = [];
+
+  @override
+  void sendObserve({bool risksOnly = false}) {
+    observes++;
+    observeRisksOnly.add(risksOnly);
+  }
+
   final List<({String id, String name, String result})> toolResponses = [];
 
   @override

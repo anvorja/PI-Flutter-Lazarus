@@ -7,6 +7,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -22,14 +23,12 @@ import '../../../emergency/presentation/controllers/sos_controller.dart';
 import '../../../emergency/presentation/providers/emergency_providers.dart';
 import '../../../location/presentation/providers/location_providers.dart';
 import '../providers/live_providers.dart';
+import '../../../../core/debug/live_debug.dart';
+import '../../../../core/telemetry/session_telemetry.dart';
 
-/// Activa las trazas de diagnóstico `[Lazarus]` de la sesión Live (mic, turnos,
-/// toolCalls, transcripciones…). Ponlo en `false` para producción.
-const bool _kLiveDebug = true;
-
-void _log(String message) {
-  if (_kLiveDebug) debugPrint(message);
-}
+/// Trazas de diagnóstico `[Lazarus]` (mic, turnos, toolCalls, transcripciones):
+/// solo en builds de depuración (HU-015).
+void _log(String message) => liveLog(message);
 
 /// Respuesta a `set_language` con un idioma que la app no tiene: el asistente la
 /// recibe y le explica a la persona, en el idioma actual, cuáles hay.
@@ -112,6 +111,37 @@ bool asksTotalSilence(String text) {
     text,
   ).replaceAll(RegExp(r'[^a-z]+'), ' ').trim();
   return totalSilencePhrases.any(words.contains);
+}
+
+/// Pausar o reanudar las descripciones (normalizado). Incluye "escribir": en
+/// la prueba de CP-LAZA-107 la transcripción oyó "deja escribir" y "vuelve a
+/// escribir", y el asistente respondió "Entendido" sin llamar a la función.
+const Set<String> pauseDescriptionPhrases = {
+  'deja de describir',
+  'deja de escribir',
+  'deja escribir',
+  'no describas',
+  'para de describir',
+  'stop describing',
+};
+const Set<String> resumeDescriptionPhrases = {
+  'vuelve a describir',
+  'vuelve a escribir',
+  'sigue describiendo',
+  'describe de nuevo',
+  'resume describing',
+  'start describing again',
+};
+
+/// `true` si [text] pide pausar las descripciones, `false` si pide
+/// reanudarlas y `null` si no pide ninguna de las dos.
+bool? asksDescriptions(String text) {
+  final words = normalizeForMatch(
+    text,
+  ).replaceAll(RegExp(r'[^a-z]+'), ' ').trim();
+  if (resumeDescriptionPhrases.any(words.contains)) return true;
+  if (pauseDescriptionPhrases.any(words.contains)) return false;
+  return null;
 }
 
 /// Reintentos automáticos cuando no se puede conectar con el backend.
@@ -331,6 +361,7 @@ class LiveController extends Notifier<LiveUiState> {
   late final LiveSessionRepository _session;
   late final MediaRepository _media;
   late final LiveSettingsRepository _settings;
+  late final SessionTelemetry _telemetry;
 
   // Detalle interno de orquestación: no forma parte de LiveUiState porque la
   // UI no lo necesita para renderizar.
@@ -367,6 +398,10 @@ class LiveController extends Notifier<LiveUiState> {
   /// `set_microphone`, la app lo aplica igual al terminar su turno (privacidad).
   bool _silenceRequested = false;
 
+  /// La persona pidió pausar (`false`) o reanudar (`true`) las descripciones:
+  /// si el asistente no llama a `set_descriptions`, la app lo guarda igual.
+  bool? _describingRequested;
+
   /// Acciones que esperan a que suene la próxima respuesta del asistente: la
   /// cuenta de la confirmación SOS arranca cuando termina la pregunta, y una
   /// llamada empieza cuando el asistente terminó de avisarla.
@@ -374,11 +409,34 @@ class LiveController extends Notifier<LiveUiState> {
   bool _afterSpeechHeard = false; // ya sonó audio de esa respuesta
   Timer? _afterSpeechFallback;
 
+  /// Ciclo de observación (HU-040): Gemini Live no habla si nadie le habla, así
+  /// que con todos callados la app le envía `[OBSERVA]` cada pocos segundos para
+  /// que mire la imagen y avise de un riesgo.
+  Timer? _observeTimer;
+  DateTime _lastActivity = DateTime.now(); // última vez que alguien habló
+  DateTime? _observeSentAt; // `[OBSERVA]` en curso, esperando respuesta
+  bool _observeAnswered = false;
+
+  /// Latencia voz a voz (HU-015): última vez que el micrófono captó voz y si
+  /// la persona habló después de la última respuesta del asistente.
+  DateTime? _lastVoiceAt;
+  bool _voicePending = false;
+
+  /// Se espera una respuesta del asistente (a la voz de la persona, al saludo,
+  /// a una función o a otro mensaje de la app) y aún no terminó: no se observa,
+  /// porque `[OBSERVA]` la cortaría.
+  bool _replyPending = false;
+  bool _replyStarted = false; // ya empezó a sonar esa respuesta
+  DateTime? _replyWaitFrom;
+  DateTime? _lastReplyEnd;
+  int _loudChunks = 0; // fragmentos seguidos con voz (el ruido es suelto)
+
   @override
   LiveUiState build() {
     _session = ref.read(liveSessionRepositoryProvider);
     _media = ref.read(mediaRepositoryProvider);
     _settings = ref.read(liveSettingsRepositoryProvider);
+    _telemetry = ref.read(sessionTelemetryProvider);
     ref.onDispose(_teardown);
     ref.onDispose(() => _afterSpeechFallback?.cancel());
     // Español por defecto; si la persona cambió el idioma por voz, se conserva.
@@ -386,6 +444,7 @@ class LiveController extends Notifier<LiveUiState> {
   }
 
   void _teardown() {
+    _stopObserving();
     _heldAudio.clear();
     _turnAllowed = false;
     // Lo que alcanzó a decir en esta sesión se registra aquí: si no, se pegaría
@@ -453,12 +512,14 @@ class LiveController extends Notifier<LiveUiState> {
       onResponse: _handleResponse,
       onClose: (cause) {
         _log('[Lazarus] sesión cerrada: ${cause.name}');
+        _telemetry.event('session_closed', {'cause': cause.name});
         if (!ref.mounted) return;
         _teardown();
         _onSessionClosed(cause, lang);
       },
       onError: (e) {
         _log('[Lazarus] error de conexión: $e');
+        _telemetry.event('error', {'kind': 'connection'});
         if (!ref.mounted) return;
         _teardown();
         _retryOrFail(lang);
@@ -484,6 +545,10 @@ class LiveController extends Notifier<LiveUiState> {
     if (state.micMuted) {
       state = state.copyWith(status: LiveStatus.idle);
       return;
+    }
+    if (cause != LiveCloseCause.upstreamError &&
+        cause != LiveCloseCause.unknown) {
+      _endTelemetry(cause.name);
     }
     switch (cause) {
       case LiveCloseCause.upstreamEnded:
@@ -517,6 +582,7 @@ class LiveController extends Notifier<LiveUiState> {
   /// agotar los reintentos deja el estado de error (tocar la pantalla reintenta).
   void _retryOrFail(String lang) {
     if (_retryAttempts >= maxConnectionRetries) {
+      _endTelemetry('connection_failed');
       state = state.copyWith(status: LiveStatus.error);
       _announce(LiveNotice.connectionFailed);
       return;
@@ -526,6 +592,7 @@ class LiveController extends Notifier<LiveUiState> {
     // entre intentos y cada aviso nuevo cortaría el anterior a la mitad.
     if (_retryAttempts == 0) _announce(LiveNotice.retrying);
     _retryAttempts++;
+    _telemetry.event('reconnect', {'attempt': _retryAttempts});
     state = state.copyWith(status: LiveStatus.connecting);
     // Si la sesión ya había funcionado, al volver basta una confirmación corta.
     if (_everConnected) _pendingKickoff = _PendingKickoff.micOn;
@@ -561,6 +628,7 @@ class LiveController extends Notifier<LiveUiState> {
         if (state.micMuted) return;
         // En altavoz, no enviar mientras el asistente suena (anti-eco).
         if (_onSpeaker && _assistantActive) return;
+        _trackVoice(pcm);
         _micChunks++;
         if (_micChunks == 1) _log('[Lazarus] mic: primer chunk enviado');
         if (_micChunks % 50 == 0) _log('[Lazarus] mic: $_micChunks chunks');
@@ -577,6 +645,7 @@ class LiveController extends Notifier<LiveUiState> {
         _session.sendImage(jpeg);
       });
       _log('[Lazarus] media activa (mic + cámara)');
+      if (ref.mounted) _startObserving();
     } catch (e) {
       _log('[Lazarus] fallo al arrancar media: $e');
     }
@@ -587,6 +656,7 @@ class LiveController extends Notifier<LiveUiState> {
   /// frase corta (sin reconectar).
   void disconnect() {
     _teardown();
+    _endTelemetry('stopped');
     ref.read(locationControllerProvider.notifier).stop();
     _everConnected = false;
     _pendingKickoff = _PendingKickoff.intro;
@@ -616,6 +686,7 @@ class LiveController extends Notifier<LiveUiState> {
     state = state.copyWith(micMuted: false);
     if (_session.connected) {
       // Sesión aún viva: reanuda el envío y pide confirmación, sin reconectar.
+      _expectReply();
       _session.sendMicResumed();
     } else {
       // La sesión se cerró durante el silencio (el backend la cierra por
@@ -633,28 +704,54 @@ class LiveController extends Notifier<LiveUiState> {
       case LiveResponseType.setupComplete:
         _log('[Lazarus] setupComplete → sesión lista, arrancando media');
         state = state.copyWith(status: LiveStatus.connected);
+        _telemetry.event('session_start', {
+          'language': state.language,
+          'resumed': _pendingKickoff != _PendingKickoff.intro,
+          'camera': _cameraAllowed,
+        });
         _retryAttempts = 0;
         _everConnected = true;
         switch (_pendingKickoff) {
           case _PendingKickoff.voice:
+            _expectReply();
             _session.sendVoiceSample();
           case _PendingKickoff.language:
+            _expectReply();
             _session.sendLanguageChanged();
           case _PendingKickoff.micOn:
+            _expectReply();
             _session.sendMicResumed();
           case _PendingKickoff.intro:
+            _expectReply();
             _session.sendKickoff();
         }
         _pendingKickoff = _PendingKickoff.intro;
+        _markActivity();
         _startMedia();
       case LiveResponseType.inputTranscription:
         final t = message.data as LiveTranscription;
         _log('[Lazarus] te escuché (transcripción): "${t.text}"');
         state = state.copyWith(userTranscript: t.text);
         _remember(t.text);
+        // La persona habla: el ciclo de observación espera su respuesta. La
+        // transcripción respalda al nivel del micrófono, que no capta una voz
+        // baja (CP-LAZA-107: preguntas cortadas por [OBSERVA]).
+        _observeSentAt = null;
+        _expectReply();
+        // Respaldo de la latencia voz a voz cuando el micrófono no detectó la
+        // voz (habla baja): la transcripción llega poco después de la voz.
+        final heardAt = DateTime.now();
+        final voice = _lastVoiceAt;
+        if (voice == null ||
+            heardAt.difference(voice) > const Duration(milliseconds: 1500)) {
+          _lastVoiceAt = heardAt;
+        }
+        _voicePending = true;
         // Está respondiendo a "¿Envío la alerta…?": la cuenta espera.
         ref.read(sosControllerProvider.notifier).personSpoke();
         if (asksTotalSilence(_recentHeard())) _silenceRequested = true;
+        final describing = asksDescriptions(_recentHeard());
+        if (describing != null) _describingRequested = describing;
         if (_heldAudio.isNotEmpty && _calledByName()) {
           _allowTurn('lo llamaron por su nombre');
         }
@@ -663,7 +760,12 @@ class LiveController extends Notifier<LiveUiState> {
         _assistantSaid.write(t.text);
         state = state.copyWith(assistantTranscript: _assistantSaid.toString());
       case LiveResponseType.toolCall:
-        _handleToolCall(message.data as LiveToolCall);
+        _markActivity();
+        final call = message.data as LiveToolCall;
+        _telemetry.event('tool_call', {
+          'names': [for (final f in call.functionCalls) f.name],
+        });
+        _handleToolCall(call);
       case LiveResponseType.audio:
         final pcm = message.data as String;
         // Modo reunión: calla salvo que lo llamen por su nombre. El audio se
@@ -687,6 +789,7 @@ class LiveController extends Notifier<LiveUiState> {
           _endMeetingTurn() ? ' (descartado: modo reunión)' : ' (interrumpido)',
         );
         _log('[Lazarus] INTERRUMPIDO (barge-in: el usuario habló encima)');
+        _telemetry.event('interrupted');
         _assistantActive = false;
         _assistantTurnDone = false;
         _drainFallback?.cancel();
@@ -702,10 +805,20 @@ class LiveController extends Notifier<LiveUiState> {
           _endMeetingTurn() ? ' (descartado: modo reunión)' : '',
         );
         _applyRequestedSilence();
+        _applyRequestedDescriptions();
         // El asistente terminó de generar; el audio aún puede estar drenando.
         // El mic se reabrirá cuando la cola se vacíe (onDrained). Si el
         // drenado llegó primero (respuesta corta), reabre ya mismo.
         _log('[Lazarus] turnComplete (asistente terminó su turno)');
+        _telemetry.event('turn_complete');
+        if (_replyStarted) {
+          // Terminó la respuesta esperada; la observación sigue tras una pausa.
+          _replyPending = false;
+          _replyStarted = false;
+          _lastReplyEnd = DateTime.now();
+        }
+        _endObserve();
+        _markActivity();
         _assistantTurnDone = true;
         if (_audioDrained) {
           _reopenMicIfTurnOver('turnComplete tras el fin del audio');
@@ -735,6 +848,19 @@ class LiveController extends Notifier<LiveUiState> {
     // El asistente está sonando → en altavoz, cierra el mic (anti-eco).
     if (!_assistantActive) {
       _log('[Lazarus] asistente: INICIA turno de audio');
+      if (_replyPending) _replyStarted = true;
+      final sent = _observeSentAt;
+      if (sent != null && !_observeAnswered) {
+        _observeAnswered = true;
+        final ms = DateTime.now().difference(sent).inMilliseconds;
+        _log('[Lazarus] observa: respondió en $ms ms');
+        _telemetry.event('observe', {'answered': true, 'ms': ms});
+      } else if (_voicePending && _lastVoiceAt != null) {
+        final ms = DateTime.now().difference(_lastVoiceAt!).inMilliseconds;
+        _log('[Lazarus] latencia voz a voz: $ms ms');
+        _telemetry.voiceToVoice(ms);
+      }
+      _voicePending = false;
       // Mientras habla, la persona no puede contestar a "¿Envío la alerta…?".
       ref.read(sosControllerProvider.notifier).assistantSpeaking();
     }
@@ -745,6 +871,112 @@ class LiveController extends Notifier<LiveUiState> {
     // base64 → bytes (×3/4) → muestras de 16 bits (÷2) → ms a 24 kHz (÷24).
     _queuedAudioMs += pcm.length * 3 ~/ 4 ~/ 48;
     _media.playAudio(pcm);
+  }
+
+  void _markActivity() => _lastActivity = DateTime.now();
+
+  /// Marca cuándo el micrófono captó voz por última vez (latencia voz a voz).
+  void _trackVoice(String base64Pcm) {
+    final double level;
+    try {
+      level = pcm16Level(base64Decode(base64Pcm));
+    } on FormatException {
+      return; // fragmento ilegible: no cuenta como voz
+    }
+    if (level < ref.read(voiceLevelThresholdProvider)) {
+      _loudChunks = 0;
+      return;
+    }
+    // Voz sostenida (unos 300 ms): pasos o golpes sueltos no cuentan. En la
+    // prueba, el ruido al caminar frenó la observación hasta 15 s.
+    if (++_loudChunks < 3) return;
+    _lastVoiceAt = DateTime.now();
+    _voicePending = true;
+    _expectReply();
+  }
+
+  /// La app o la persona dijeron algo que el asistente va a responder.
+  void _expectReply() {
+    _replyPending = true;
+    _replyStarted = false;
+    _replyWaitFrom = DateTime.now();
+    _markActivity();
+  }
+
+  /// Cierra la telemetría de la sesión con la mediana y el percentil 90.
+  void _endTelemetry(String reason) {
+    final s = _telemetry.endSession(reason);
+    if (s.count > 0) {
+      _log(
+        '[Lazarus] latencia voz a voz: ${s.count} respuestas, mediana ${s.medianMs} ms, p90 ${s.p90Ms} ms',
+      );
+    }
+    _lastVoiceAt = null;
+    _voicePending = false;
+  }
+
+  void _startObserving() {
+    _observeTimer?.cancel();
+    _observeSentAt = null;
+    _markActivity();
+    _observeTimer = Timer.periodic(
+      const Duration(milliseconds: 500),
+      (_) => _maybeObserve(),
+    );
+  }
+
+  void _stopObserving() {
+    _observeTimer?.cancel();
+    _observeTimer = null;
+    _observeSentAt = null;
+  }
+
+  /// Envía `[OBSERVA]` solo con todos callados: ni la persona ni el asistente
+  /// hablan, no hay una respuesta pendiente, no es modo reunión ni silencio
+  /// total y no hay una alerta SOS en curso (criterio 4 de HU-040).
+  void _maybeObserve() {
+    if (!ref.mounted || !_session.connected) return;
+    if (state.status != LiveStatus.connected) return;
+    if (state.meetingMode || state.micMuted || !_cameraAllowed) return;
+    if (_assistantActive) return;
+    if (ref.read(sosControllerProvider) != SosStatus.idle) return;
+    final now = DateTime.now();
+    // Se espera una respuesta (o un tiempo máximo) antes de observar, para no
+    // cortarla; y tras una respuesta, una pausa por si la persona sigue.
+    final waitFrom = _replyWaitFrom;
+    if (_replyPending &&
+        waitFrom != null &&
+        now.difference(waitFrom) < ref.read(observeReplyWaitProvider)) {
+      return;
+    }
+    final replyEnd = _lastReplyEnd;
+    if (replyEnd != null &&
+        now.difference(replyEnd) < ref.read(observeAfterReplyProvider)) {
+      return;
+    }
+    final sent = _observeSentAt;
+    if (sent != null) {
+      if (now.difference(sent) < ref.read(observeTimeoutProvider)) return;
+      _endObserve();
+    }
+    if (now.difference(_lastActivity) < ref.read(observePeriodProvider)) return;
+    _observeSentAt = now;
+    _observeAnswered = false;
+    _lastActivity = now;
+    // En pausa la app lo dice en el propio mensaje: el modelo no siempre
+    // recuerda que se pausó a mitad de la sesión (CP-LAZA-107).
+    _session.sendObserve(risksOnly: !_settings.getDescribing());
+  }
+
+  /// Cierra el `[OBSERVA]` en curso; si el asistente no habló, calló (correcto
+  /// cuando no hay riesgo ni nada nuevo).
+  void _endObserve() {
+    if (_observeSentAt == null) return;
+    if (!_observeAnswered) {
+      _log('[Lazarus] observa: calló');
+      _telemetry.event('observe', {'answered': false});
+    }
+    _observeSentAt = null;
   }
 
   /// Guarda lo que se oyó en los últimos segundos (modo reunión).
@@ -780,6 +1012,20 @@ class LiveController extends Notifier<LiveUiState> {
       '[Lazarus] silencio total aplicado por la app (el asistente no llamó a set_microphone)',
     );
     state = state.copyWith(micMuted: true);
+  }
+
+  /// Red de seguridad de "deja de describir" / "vuelve a describir": el
+  /// asistente respondió sin llamar a `set_descriptions`, así que la app guarda
+  /// el ajuste igual (persiste para la próxima sesión).
+  void _applyRequestedDescriptions() {
+    final wanted = _describingRequested;
+    if (wanted == null) return;
+    _describingRequested = null;
+    if (_settings.getDescribing() == wanted) return;
+    _settings.setDescribing(wanted);
+    _log(
+      '[Lazarus] descripciones ${wanted ? "reanudadas" : "en pausa"} por la app (el asistente no llamó a set_descriptions)',
+    );
   }
 
   /// Este turno puede sonar en modo reunión: suelta el audio retenido.
@@ -850,6 +1096,7 @@ class LiveController extends Notifier<LiveUiState> {
     if (!ref.mounted) return;
     if (_session.connected && state.status == LiveStatus.connected) {
       _turnAllowed = true; // debe sonar aunque esté en modo reunión
+      _expectReply();
       _session.sendSosResult(result);
     } else {
       _announce(
@@ -941,6 +1188,7 @@ class LiveController extends Notifier<LiveUiState> {
           }
         case 'set_descriptions':
           _settings.setDescribing(call.args['enabled'] == true);
+          _describingRequested = null;
         case 'set_system_cues':
           // enabled=true => avisos activos => no silenciado.
           _settings.setSystemCuesMuted(call.args['enabled'] != true);
@@ -1006,10 +1254,14 @@ class LiveController extends Notifier<LiveUiState> {
     // La confirmación de entrar o salir del modo reunión sí debe sonar.
     if (meetingMode != null) _allowTurn('entra o sale del modo reunión');
 
-    void respond() => _session.sendToolResponse([
-      for (final c in toolCall.functionCalls)
-        (id: c.id, name: c.name, result: results[c.id] ?? 'ok'),
-    ]);
+    void respond() {
+      _expectReply(); // tras la función, el asistente sigue hablando
+      _session.sendToolResponse([
+        for (final c in toolCall.functionCalls)
+          (id: c.id, name: c.name, result: results[c.id] ?? 'ok'),
+      ]);
+    }
+
     if (waits.isEmpty) {
       respond();
     } else {
