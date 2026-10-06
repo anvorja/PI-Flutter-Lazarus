@@ -124,6 +124,10 @@ el teléfono siga conectado al PC (pruebas en la calle):
 # Trazas [Lazarus] de la app con la hora (5 MB; el anterior queda en lazarus.log.1)
 adb exec-out run-as com.lazarus.app cat files/lazarus.log > ~/lazarus.log
 
+# Telemetría sin contenido de la persona (también en distribución): eventos de
+# sesión y latencia voz a voz (mediana y percentil 90 al cerrar cada sesión)
+adb exec-out run-as com.lazarus.app cat files/telemetry.jsonl > ~/telemetria.jsonl
+
 # Recorrido del GPS: una fila cada ~2 s con precisión y estado
 adb exec-out run-as com.lazarus.app cat files/gps_track.csv > ~/recorrido.csv
 

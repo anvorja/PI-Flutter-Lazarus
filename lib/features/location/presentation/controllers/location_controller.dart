@@ -16,8 +16,9 @@ import '../../domain/entities/reliability_tracker.dart';
 import '../../domain/repositories/location_repository.dart';
 import '../../domain/repositories/track_recorder.dart';
 import '../providers/location_providers.dart';
+import '../../../../core/debug/live_debug.dart';
 
-void _log(String message) => debugPrint(message);
+void _log(String message) => liveLog(message);
 
 @immutable
 class LocationState {

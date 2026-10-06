@@ -11,9 +11,9 @@ library;
 
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_pcm_sound/flutter_pcm_sound.dart';
+import '../../../../core/debug/live_debug.dart';
 
 class AudioPlayer {
   AudioPlayer({this.onDrained});
@@ -96,7 +96,7 @@ class AudioPlayer {
     try {
       await call();
     } on PlatformException catch (e) {
-      debugPrint('[Lazarus] reproductor ($op): ${e.message}');
+      liveLog('[Lazarus] reproductor ($op): ${e.message}');
     }
   }
 }

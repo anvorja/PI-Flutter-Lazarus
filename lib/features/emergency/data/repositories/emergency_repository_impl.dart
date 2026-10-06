@@ -2,13 +2,13 @@
 /// `SharedPreferences` y el SMS y las llamadas van por el canal nativo.
 library;
 
-import 'package:flutter/foundation.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../domain/entities/emergency_contact.dart';
 import '../../domain/repositories/emergency_repository.dart';
 import '../datasources/emergency_phone_datasource.dart' as phone_channel;
+import '../../../../core/debug/live_debug.dart';
 
 const String _nameKey = 'lazarus_emergency_contact_name';
 const String _phoneKey = 'lazarus_emergency_contact_phone';
@@ -51,7 +51,7 @@ class EmergencyRepositoryImpl implements EmergencyRepository {
     final result = await phone_channel
         .sendSms(phone, text)
         .timeout(smsConfirmationTimeout, onTimeout: () => 'timeout');
-    if (result != 'sent') debugPrint('[Lazarus] SOS: SMS no enviado ($result)');
+    if (result != 'sent') liveLog('[Lazarus] SOS: SMS no enviado ($result)');
     return switch (result) {
       'sent' => SmsResult.sent,
       'timeout' => SmsResult.timeout,
