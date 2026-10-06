@@ -38,6 +38,16 @@ void main() {
     expect(formatAddress(p), 'Cra. 76 # 14C-101, Comuna 17, Cali');
   });
 
+  test('quita lo pegado antes de la vía y el "#" repetido', () {
+    // Sótano de un centro comercial (CP-LAZA-39, 5-oct).
+    final p = Placemark(
+      street: '18:00Cra. 100 # #5-169, Las Vegas, Cali',
+      subLocality: 'Las Vegas',
+      locality: 'Cali',
+    );
+    expect(formatAddress(p), 'Cra. 100 # 5-169, Las Vegas, Cali');
+  });
+
   test('sin datos: null', () {
     expect(formatAddress(Placemark()), isNull);
   });

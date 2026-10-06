@@ -81,10 +81,25 @@ String? formatAddress(Placemark p) {
   final number = clean(p.subThoroughfare?.replaceFirst(RegExp(r'^\s*#'), ''));
   final street = road != null
       ? (number != null ? '$road # $number' : road)
-      : clean(p.street?.split(',').first);
+      : clean(_streetOnly(p.street?.split(',').first));
   final parts = <String>[];
   for (final part in [street, clean(p.subLocality), clean(p.locality)]) {
     if (part != null && !parts.contains(part)) parts.add(part);
   }
   return parts.isEmpty ? null : parts.join(', ');
+}
+
+/// En el sótano de un centro comercial `street` llegó como
+/// "18:00Cra. 100 # #5-169": con texto pegado delante de la vía y el "#"
+/// repetido. Se corta desde el tipo de vía y se deja un solo "#".
+String? _streetOnly(String? s) {
+  if (s == null) return null;
+  final road = RegExp(
+    r'(Carrera|Cra\.?|Kr\.?|Calle|Cl\.?|Avenida|Av\.?|Diagonal|Dg\.?|'
+    r'Transversal|Tv\.?|Autopista)\s',
+  ).firstMatch(s);
+  final from = road == null ? s : s.substring(road.start);
+  return from
+      .replaceAll(RegExp(r'#\s*#'), '#')
+      .replaceAll(RegExp(r'#(?=\S)'), '# ');
 }

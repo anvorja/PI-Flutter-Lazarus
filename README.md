@@ -42,6 +42,26 @@ desde antes de abrir la app. La app guarda la evidencia en el teléfono; al volv
 teléfono se conecta al Wi-Fi de la casa y la evidencia se baja al PC por depuración
 inalámbrica.
 
+### Flujo general (leer primero)
+
+La **depuración inalámbrica solo sirve para dos cosas**: instalar el APK y sacar la
+evidencia. **Durante la prueba la app no depende de adb**: habla con el backend por la
+URL de ngrok (`BACKEND_URL`, fijada al compilar) usando los datos móviles.
+
+La depuración inalámbrica exige que teléfono y PC estén en la misma red Wi-Fi, y
+mientras el teléfono tenga Wi-Fi, Android usa el Wi-Fi para internet y no los datos
+móviles. Por eso, para probar con datos hay que apagar el Wi-Fi, y al apagarlo se cae
+la sesión de adb. El orden es:
+
+1. **Con Wi-Fi**: levantar backend y ngrok, compilar con la URL de ngrok, conectar
+   por depuración inalámbrica e instalar el APK (secciones 1 y 2).
+2. **Apagar el Wi-Fi del teléfono** y salir a hacer la prueba con datos móviles. La
+   app llega al backend por ngrok; adb ya no está conectado y no hace falta.
+3. **Durante la prueba** la app guarda su propia evidencia en el teléfono (sección 3),
+   porque es un build de depuración.
+4. **Al volver**: encender el Wi-Fi, reconectar adb (el puerto casi seguro cambió, ver
+   la pantalla de Depuración inalámbrica) y bajar la evidencia al PC.
+
 ### 1. Conectar el teléfono por depuración inalámbrica
 
 En el teléfono: *Opciones de desarrollador* → **Depuración inalámbrica** (activar). La
