@@ -49,4 +49,9 @@ abstract class LiveSettingsRepository {
   /// Si los avisos del sistema están silenciados.
   bool getSystemCuesMuted();
   Future<void> setSystemCuesMuted(bool muted);
+
+  /// Si ya se pidió excluir a Lazarus de la optimización de batería (HU-017):
+  /// se pide una sola vez.
+  bool getBatteryExemptionAsked();
+  Future<void> setBatteryExemptionAsked();
 }

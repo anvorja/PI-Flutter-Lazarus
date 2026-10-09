@@ -15,6 +15,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../domain/entities/live_close.dart';
 import '../../domain/entities/live_message.dart';
 import '../../domain/entities/media_permission.dart';
+import '../../domain/repositories/background_session_repository.dart';
 import '../../domain/repositories/live_session_repository.dart';
 import '../../domain/repositories/live_settings_repository.dart';
 import '../../domain/repositories/media_repository.dart';
@@ -163,6 +164,12 @@ enum LiveNotice {
   /// diga).
   sosSent,
   sosFailed,
+
+  /// Primera sesión (HU-017): pide quitar la optimización de batería para que
+  /// la sesión siga con la pantalla bloqueada; la variante Xiaomi agrega el
+  /// ajuste del fabricante.
+  batteryExemption,
+  batteryExemptionXiaomi,
 }
 
 /// Avisos informativos que la persona puede silenciar por voz (`set_system_cues`).
@@ -194,6 +201,10 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Alerta enviada a tu contacto de emergencia. Detente en un lugar seguro y espera.',
     LiveNotice.sosFailed:
         'No se pudo enviar la alerta. Pide ayuda a alguien cerca o llama al 123.',
+    LiveNotice.batteryExemption:
+        'Antes de empezar: para que siga contigo con la pantalla bloqueada, permite que Lazarus funcione sin restricciones de batería. Luego toca la pantalla para empezar.',
+    LiveNotice.batteryExemptionXiaomi:
+        'Antes de empezar: para que siga contigo con la pantalla bloqueada, permite que Lazarus funcione sin restricciones de batería. En los teléfonos Xiaomi, además, en Ajustes, Aplicaciones, Lazarus, Ahorro de batería, elige Sin restricciones. Luego toca la pantalla para empezar.',
   },
   'en': {
     LiveNotice.retrying: 'I lost the connection to the server. Retrying.',
@@ -216,6 +227,10 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Alert sent to your emergency contact. Stop in a safe place and wait.',
     LiveNotice.sosFailed:
         'The alert could not be sent. Ask someone nearby for help or call 123.',
+    LiveNotice.batteryExemption:
+        'Before we start: so I can stay with you with the screen locked, allow Lazarus to run without battery restrictions. Then tap the screen to start.',
+    LiveNotice.batteryExemptionXiaomi:
+        'Before we start: so I can stay with you with the screen locked, allow Lazarus to run without battery restrictions. On Xiaomi phones, also go to Settings, Apps, Lazarus, Battery saver, and choose No restrictions. Then tap the screen to start.',
   },
   'fr': {
     LiveNotice.retrying: 'J\'ai perdu la connexion au serveur. Nouvel essai.',
@@ -238,6 +253,10 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Alerte envoyée à ton contact d\'urgence. Arrête-toi dans un endroit sûr et attends.',
     LiveNotice.sosFailed:
         'L\'alerte n\'a pas pu être envoyée. Demande de l\'aide à quelqu\'un à côté ou appelle le 123.',
+    LiveNotice.batteryExemption:
+        'Avant de commencer : pour rester avec toi écran verrouillé, autorise Lazarus à fonctionner sans restriction de batterie. Ensuite, touche l\'écran pour commencer.',
+    LiveNotice.batteryExemptionXiaomi:
+        'Avant de commencer : pour rester avec toi écran verrouillé, autorise Lazarus à fonctionner sans restriction de batterie. Sur les téléphones Xiaomi, va aussi dans Paramètres, Applications, Lazarus, Économiseur de batterie, et choisis Aucune restriction. Ensuite, touche l\'écran pour commencer.',
   },
   'pt': {
     LiveNotice.retrying: 'Perdi a conexão com o servidor. Tentando de novo.',
@@ -260,6 +279,10 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Alerta enviado ao seu contato de emergência. Pare em um lugar seguro e espere.',
     LiveNotice.sosFailed:
         'Não foi possível enviar o alerta. Peça ajuda a alguém por perto ou ligue para o 123.',
+    LiveNotice.batteryExemption:
+        'Antes de começar: para eu continuar com você com a tela bloqueada, permita que o Lazarus funcione sem restrições de bateria. Depois toque na tela para começar.',
+    LiveNotice.batteryExemptionXiaomi:
+        'Antes de começar: para eu continuar com você com a tela bloqueada, permita que o Lazarus funcione sem restrições de bateria. Nos telefones Xiaomi, também vá em Configurações, Aplicativos, Lazarus, Economia de bateria, e escolha Sem restrições. Depois toque na tela para começar.',
   },
   'it': {
     LiveNotice.retrying: 'Ho perso la connessione al server. Riprovo.',
@@ -282,6 +305,10 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Avviso inviato al tuo contatto di emergenza. Fermati in un luogo sicuro e aspetta.',
     LiveNotice.sosFailed:
         'Non è stato possibile inviare l\'avviso. Chiedi aiuto a qualcuno vicino o chiama il 123.',
+    LiveNotice.batteryExemption:
+        'Prima di iniziare: per restare con te a schermo bloccato, consenti a Lazarus di funzionare senza restrizioni della batteria. Poi tocca lo schermo per iniziare.',
+    LiveNotice.batteryExemptionXiaomi:
+        'Prima di iniziare: per restare con te a schermo bloccato, consenti a Lazarus di funzionare senza restrizioni della batteria. Sui telefoni Xiaomi, vai anche in Impostazioni, App, Lazarus, Risparmio batteria, e scegli Nessuna restrizione. Poi tocca lo schermo per iniziare.',
   },
 };
 
@@ -294,7 +321,7 @@ enum LiveStatus { idle, connecting, connected, error }
 /// Qué disparar al completarse el setup: saludo normal, muestra de voz o
 /// confirmación de idioma (tras un cambio, sin repetir toda la presentación), o
 /// confirmación de micrófono reactivado.
-enum _PendingKickoff { intro, voice, language, micOn }
+enum _PendingKickoff { intro, voice, language, micOn, cameraOff, cameraOn }
 
 /// Estado observable por la UI. Los detalles de orquestación (contadores de
 /// chunks, si hay audífonos, si el asistente sigue sonando…) son detalle
@@ -362,6 +389,7 @@ class LiveController extends Notifier<LiveUiState> {
   late final MediaRepository _media;
   late final LiveSettingsRepository _settings;
   late final SessionTelemetry _telemetry;
+  late final BackgroundSessionRepository _background;
 
   // Detalle interno de orquestación: no forma parte de LiveUiState porque la
   // UI no lo necesita para renderizar.
@@ -387,6 +415,19 @@ class LiveController extends Notifier<LiveUiState> {
   bool _openSettingsOnTap = false; // permisos bloqueados: el toque abre ajustes
   bool _cameraAllowed = true; // false = sin permiso de cámara (solo audio)
   bool _everConnected = false; // hubo setupComplete en esta sesión de uso
+
+  /// Pantalla bloqueada (HU-017): el servicio en primer plano mantiene la
+  /// sesión; la cámara se pausa mientras la app no está visible.
+  bool _backgroundOn = false;
+  bool _visible = true;
+  bool _cameraPaused = false;
+
+  /// La sesión actual se abrió con la pantalla bloqueada: no tiene ninguna
+  /// imagen y su system prompt lo sabe (HU-017).
+  bool _sessionBlind = false;
+
+  /// Cambio de sesión pendiente al bloquear o desbloquear la pantalla.
+  Timer? _cameraSwitch;
 
   /// Modo reunión: lo que se oyó hace poco (para saber si llamaron al asistente
   /// por su nombre) y el audio del turno actual retenido hasta saberlo.
@@ -437,14 +478,20 @@ class LiveController extends Notifier<LiveUiState> {
     _media = ref.read(mediaRepositoryProvider);
     _settings = ref.read(liveSettingsRepositoryProvider);
     _telemetry = ref.read(sessionTelemetryProvider);
+    _background = ref.read(backgroundSessionRepositoryProvider);
+    _background.onStopRequested(_stopFromNotification);
     ref.onDispose(_teardown);
+    ref.onDispose(_stopBackground);
     ref.onDispose(() => _afterSpeechFallback?.cancel());
     // Español por defecto; si la persona cambió el idioma por voz, se conserva.
     return LiveUiState(language: _settings.getLanguage());
   }
 
   void _teardown() {
+    _cameraSwitch?.cancel();
+    _cameraSwitch = null;
     _stopObserving();
+    _cameraPaused = false;
     _heldAudio.clear();
     _turnAllowed = false;
     // Lo que alcanzó a decir en esta sesión se registra aquí: si no, se pegaría
@@ -487,9 +534,151 @@ class LiveController extends Notifier<LiveUiState> {
         _announce(LiveNotice.permissionBlocked);
         return;
     }
+    if (await _askBatteryExemptionOnce() || !ref.mounted) return;
+    // La sesión sigue con la pantalla bloqueada (HU-017).
+    unawaited(_startBackground());
     // La ubicación acompaña a la sesión; sin permiso la sesión sigue igual.
     unawaited(ref.read(locationControllerProvider.notifier).start());
     _openSession(state.language);
+  }
+
+  /// La primera vez, antes de empezar, pide excluir a Lazarus de la optimización
+  /// de batería (si no, Android puede suspenderla con la pantalla bloqueada) y lo
+  /// explica en voz alta, con el ajuste extra de Xiaomi. Esa vez no se abre la
+  /// sesión (el saludo se cruzaría con el aviso y el diálogo): la persona vuelve a
+  /// tocar la pantalla. Devuelve `true` si se pidió.
+  Future<bool> _askBatteryExemptionOnce() async {
+    if (_settings.getBatteryExemptionAsked()) return false;
+    await _settings.setBatteryExemptionAsked();
+    final status = await _background.batteryStatus();
+    if (status.exempt || !ref.mounted) return false;
+    _announce(
+      status.manufacturer == 'xiaomi'
+          ? LiveNotice.batteryExemptionXiaomi
+          : LiveNotice.batteryExemption,
+    );
+    final exempt = await _background.requestBatteryExemption();
+    _log(
+      '[Lazarus] batería: ${exempt ? "sin restricciones" : "sigue con optimización"}',
+    );
+    return true;
+  }
+
+  Future<void> _startBackground() async {
+    if (_backgroundOn) return;
+    _backgroundOn = true;
+    final started = await _background.start();
+    _log(
+      started
+          ? '[Lazarus] segundo plano: activo (puede bloquear la pantalla)'
+          : '[Lazarus] segundo plano: Android no lo permitió',
+    );
+    if (!started) _backgroundOn = false;
+  }
+
+  void _stopBackground() {
+    if (!_backgroundOn) return;
+    _backgroundOn = false;
+    unawaited(_background.stop());
+    _log('[Lazarus] segundo plano: detenido');
+  }
+
+  /// "Detener" en la notificación: lo mismo que el botón de la pantalla.
+  void _stopFromNotification() {
+    if (!ref.mounted) return;
+    _log('[Lazarus] Detener desde la notificación');
+    if (_backgroundOn || state.isLive) {
+      disconnect();
+    } else {
+      _stopBackground();
+    }
+  }
+
+  /// La app dejó de verse (pantalla bloqueada u otra app encima) o volvió.
+  /// Android no deja usar la cámara sin la app visible. Avisarle al asistente
+  /// no basta: en la caminata de CP-LAZA-45 siguió describiendo la última imagen
+  /// como si fuera lo que la persona tenía delante, y hasta dio indicaciones con
+  /// ella. Por eso, al bloquear se abre una sesión nueva sin ninguna imagen, en
+  /// modo pantalla bloqueada; al desbloquear, tras una espera por si fue sin
+  /// querer, se vuelve a una sesión con cámara (HU-017).
+  void onVisibilityChanged(bool visible) {
+    if (visible == _visible) return;
+    _visible = visible;
+    if (!visible) _pauseCamera();
+    _syncCameraSession();
+  }
+
+  /// El asistente recibe imágenes ahora: hay permiso, la sesión no es de
+  /// pantalla bloqueada y la cámara no está en pausa.
+  bool get _canSee => _cameraAllowed && !_sessionBlind && !_cameraPaused;
+
+  bool get _sessionUp =>
+      _session.connected && state.status == LiveStatus.connected;
+
+  void _pauseCamera() {
+    if (!_cameraAllowed || _cameraPaused || !_sessionUp) return;
+    _cameraPaused = true;
+    _stopObserving();
+    unawaited(_media.stopCamera());
+    _log('[Lazarus] pantalla bloqueada: cámara en pausa (sigue el audio)');
+    _telemetry.event('camera', {'paused': true});
+  }
+
+  /// Deja la sesión acorde con la pantalla: sin imágenes si está bloqueada y
+  /// con cámara si no. Al bloquear cambia enseguida; al desbloquear, espera.
+  void _syncCameraSession() {
+    _cameraSwitch?.cancel();
+    _cameraSwitch = null;
+    if (!_cameraAllowed || !_sessionUp) return;
+    final blind = !_visible;
+    if (blind == _sessionBlind) {
+      // Desbloqueo antes del cambio: la sesión aún tiene cámara, se reanuda.
+      if (!blind) _resumeCamera();
+      return;
+    }
+    // En silencio total o en modo reunión no se cambia: el aviso sonaría. Se
+    // hace al salir de esos modos.
+    if (state.micMuted || state.meetingMode) return;
+    _cameraSwitch = Timer(
+      blind ? Duration.zero : ref.read(cameraUnlockDelayProvider),
+      _switchCameraSession,
+    );
+  }
+
+  void _switchCameraSession() {
+    _cameraSwitch = null;
+    if (!ref.mounted || !_sessionUp) return;
+    final blind = !_visible;
+    if (blind == _sessionBlind) return;
+    _log(
+      blind
+          ? '[Lazarus] pantalla bloqueada: sesión nueva sin imágenes'
+          : '[Lazarus] pantalla desbloqueada: sesión nueva con cámara',
+    );
+    _telemetry.event('camera_session', {'screen_locked': blind});
+    _pendingKickoff = blind
+        ? _PendingKickoff.cameraOff
+        : _PendingKickoff.cameraOn;
+    _teardown();
+    _openSession(state.language);
+  }
+
+  void _resumeCamera() {
+    if (!_cameraPaused) return;
+    _cameraPaused = false;
+    if (!_sessionUp) return;
+    unawaited(_startCamera());
+    _log('[Lazarus] pantalla desbloqueada: cámara de vuelta');
+    _telemetry.event('camera', {'paused': false});
+  }
+
+  Future<void> _startCamera() async {
+    await _media.startCamera((jpeg) {
+      // Silencio total (Modo B): tampoco enviar cámara (privacidad).
+      if (state.micMuted) return;
+      _session.sendImage(jpeg);
+    });
+    if (ref.mounted && !_cameraPaused) _startObserving();
   }
 
   void _openSession(String lang) {
@@ -501,6 +690,7 @@ class LiveController extends Notifier<LiveUiState> {
     );
 
     final voice = _settings.getVoice();
+    _sessionBlind = _cameraAllowed && !_visible;
     _session.connect(
       language: lang,
       voice: voice.isEmpty ? null : voice,
@@ -509,6 +699,7 @@ class LiveController extends Notifier<LiveUiState> {
       verbosity: _settings.getVerbosity(),
       describing: _settings.getDescribing(),
       camera: _cameraAllowed,
+      screenLocked: _sessionBlind,
       onResponse: _handleResponse,
       onClose: (cause) {
         _log('[Lazarus] sesión cerrada: ${cause.name}');
@@ -639,13 +830,15 @@ class LiveController extends Notifier<LiveUiState> {
         _log('[Lazarus] media activa (solo micrófono: sin permiso de cámara)');
         return;
       }
-      await _media.startCamera((jpeg) {
-        // Silencio total (Modo B): tampoco enviar cámara (privacidad).
-        if (state.micMuted) return;
-        _session.sendImage(jpeg);
-      });
+      if (!_visible || _sessionBlind) {
+        // Sesión de pantalla bloqueada: sin imágenes; la cámara vuelve con la
+        // sesión que se abre al desbloquear.
+        _cameraPaused = true;
+        _log('[Lazarus] media activa (solo micrófono: pantalla bloqueada)');
+        return;
+      }
+      await _startCamera();
       _log('[Lazarus] media activa (mic + cámara)');
-      if (ref.mounted) _startObserving();
     } catch (e) {
       _log('[Lazarus] fallo al arrancar media: $e');
     }
@@ -656,6 +849,7 @@ class LiveController extends Notifier<LiveUiState> {
   /// frase corta (sin reconectar).
   void disconnect() {
     _teardown();
+    _stopBackground();
     _endTelemetry('stopped');
     ref.read(locationControllerProvider.notifier).stop();
     _everConnected = false;
@@ -684,7 +878,10 @@ class LiveController extends Notifier<LiveUiState> {
   /// asistente una confirmación corta de que ya vuelve a escuchar.
   void _resumeFromMute() {
     state = state.copyWith(micMuted: false);
-    if (_session.connected) {
+    if (_session.connected && _cameraAllowed && _sessionBlind == _visible) {
+      // La pantalla cambió durante el silencio: la sesión nueva confirma.
+      _switchCameraSession();
+    } else if (_session.connected) {
       // Sesión aún viva: reanuda el envío y pide confirmación, sin reconectar.
       _expectReply();
       _session.sendMicResumed();
@@ -708,6 +905,7 @@ class LiveController extends Notifier<LiveUiState> {
           'language': state.language,
           'resumed': _pendingKickoff != _PendingKickoff.intro,
           'camera': _cameraAllowed,
+          'screen_locked': _sessionBlind,
         });
         _retryAttempts = 0;
         _everConnected = true;
@@ -721,6 +919,12 @@ class LiveController extends Notifier<LiveUiState> {
           case _PendingKickoff.micOn:
             _expectReply();
             _session.sendMicResumed();
+          case _PendingKickoff.cameraOff:
+            _expectReply();
+            _session.sendCameraPaused();
+          case _PendingKickoff.cameraOn:
+            _expectReply();
+            _session.sendCameraResumed();
           case _PendingKickoff.intro:
             _expectReply();
             _session.sendKickoff();
@@ -728,6 +932,8 @@ class LiveController extends Notifier<LiveUiState> {
         _pendingKickoff = _PendingKickoff.intro;
         _markActivity();
         _startMedia();
+        // La pantalla cambió mientras se conectaba.
+        _syncCameraSession();
       case LiveResponseType.inputTranscription:
         final t = message.data as LiveTranscription;
         _log('[Lazarus] te escuché (transcripción): "${t.text}"');
@@ -938,6 +1144,7 @@ class LiveController extends Notifier<LiveUiState> {
     if (!ref.mounted || !_session.connected) return;
     if (state.status != LiveStatus.connected) return;
     if (state.meetingMode || state.micMuted || !_cameraAllowed) return;
+    if (_cameraPaused) return;
     if (_assistantActive) return;
     if (ref.read(sosControllerProvider) != SosStatus.idle) return;
     final now = DateTime.now();
@@ -1202,7 +1409,7 @@ class LiveController extends Notifier<LiveUiState> {
           waits.add(
             ref
                 .read(locationControllerProvider.notifier)
-                .describeForAssistant()
+                .describeForAssistant(canSee: _canSee)
                 .then((where) {
                   _log('[Lazarus] ubicación para el asistente: $where');
                   results[call.id] = where;
@@ -1253,6 +1460,8 @@ class LiveController extends Notifier<LiveUiState> {
     }
     // La confirmación de entrar o salir del modo reunión sí debe sonar.
     if (meetingMode != null) _allowTurn('entra o sale del modo reunión');
+    // Si la pantalla cambió durante la reunión, la sesión se ajusta al salir.
+    if (meetingMode == false) _whenAssistantFinishes(_syncCameraSession);
 
     void respond() {
       _expectReply(); // tras la función, el asistente sigue hablando

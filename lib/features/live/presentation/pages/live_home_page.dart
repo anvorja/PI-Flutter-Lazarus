@@ -23,11 +23,37 @@ const Color stopButtonColor = Color(0xFFC62828);
 /// Lo que lee TalkBack sobre el botón.
 const String stopButtonSemanticsLabel = 'Detener asistente';
 
-class LiveHomePage extends ConsumerWidget {
+class LiveHomePage extends ConsumerStatefulWidget {
   const LiveHomePage({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<LiveHomePage> createState() => _LiveHomePageState();
+}
+
+class _LiveHomePageState extends ConsumerState<LiveHomePage> {
+  /// Pantalla bloqueada u otra app encima (HU-017): la sesión sigue, pero la
+  /// cámara se pausa hasta que la app vuelve a verse.
+  late final AppLifecycleListener _lifecycle;
+
+  @override
+  void initState() {
+    super.initState();
+    _lifecycle = AppLifecycleListener(
+      onHide: () =>
+          ref.read(liveControllerProvider.notifier).onVisibilityChanged(false),
+      onShow: () =>
+          ref.read(liveControllerProvider.notifier).onVisibilityChanged(true),
+    );
+  }
+
+  @override
+  void dispose() {
+    _lifecycle.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final state = ref.watch(liveControllerProvider);
     final controller = ref.read(liveControllerProvider.notifier);
     final theme = Theme.of(context);

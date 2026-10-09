@@ -13,6 +13,10 @@ import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.PowerManager
+import android.provider.Settings
 import android.telephony.SmsManager
 import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
@@ -36,6 +40,9 @@ class MainActivity : FlutterActivity() {
     private val channelName = "lazarus/audio"
     private val emergencyChannelName = "lazarus/emergency"
     private val smsSentAction = "com.lazarus.app.SMS_SENT"
+    private val sessionChannelName = "lazarus/session"
+    private val batteryRequestCode = 17
+    private var batteryResult: MethodChannel.Result? = null
     private var smsRequest = 0
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -72,6 +79,39 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        // Pantalla bloqueada (HU-017): servicio en primer plano y batería.
+        val session = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, sessionChannelName)
+        session.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "start" -> {
+                    try {
+                        LazarusSessionService.start(this)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        // Android 12+ no deja arrancarlo desde segundo plano.
+                        debugLog('w', "LazarusSession", "servicio no arrancó: ${e.message}")
+                        result.success(false)
+                    }
+                }
+                "stop" -> {
+                    LazarusSessionService.stop(this)
+                    result.success(null)
+                }
+                "batteryStatus" -> result.success(
+                    mapOf(
+                        "exempt" to isIgnoringBatteryOptimizations(),
+                        "manufacturer" to Build.MANUFACTURER.lowercase(),
+                    ),
+                )
+                "requestBatteryExemption" -> requestBatteryExemption(result)
+                else -> result.notImplemented()
+            }
+        }
+        val main = Handler(Looper.getMainLooper())
+        LazarusSessionService.onStopRequested = {
+            main.post { session.invokeMethod("stopRequested", null) }
+        }
 
         // Alerta SOS (HU-012): SMS con confirmación del sistema y llamadas.
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, emergencyChannelName)
@@ -167,5 +207,52 @@ class MainActivity : FlutterActivity() {
             debugLog('w', "LazarusSos", "no se pudo llamar: ${e.message}")
             false
         }
+    }
+
+    private fun isIgnoringBatteryOptimizations(): Boolean {
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        return pm.isIgnoringBatteryOptimizations(packageName)
+    }
+
+    /**
+     * Abre el diálogo del sistema para excluir a Lazarus de la optimización de
+     * batería y responde cuando la persona lo cierra: `true` si quedó excluida.
+     */
+    private fun requestBatteryExemption(result: MethodChannel.Result) {
+        if (isIgnoringBatteryOptimizations()) {
+            result.success(true)
+            return
+        }
+        batteryResult?.success(false)
+        batteryResult = result
+        try {
+            @Suppress("BatteryLife")
+            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                .setData(Uri.parse("package:$packageName"))
+            @Suppress("DEPRECATION")
+            startActivityForResult(intent, batteryRequestCode)
+        } catch (e: Exception) {
+            debugLog('w', "LazarusSession", "sin diálogo de batería: ${e.message}")
+            batteryResult = null
+            result.success(false)
+        }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        @Suppress("DEPRECATION")
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == batteryRequestCode) {
+            batteryResult?.success(isIgnoringBatteryOptimizations())
+            batteryResult = null
+        }
+    }
+
+    override fun onDestroy() {
+        // Sin la actividad no queda sesión que mantener (p. ej. la persona cerró
+        // la app desde recientes): el servicio y su notificación se van con ella.
+        LazarusSessionService.onStopRequested = null
+        LazarusSessionService.stop(this)
+        super.onDestroy()
     }
 }

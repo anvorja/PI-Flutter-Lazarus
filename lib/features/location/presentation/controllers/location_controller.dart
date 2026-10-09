@@ -13,6 +13,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/entities/location_fix.dart';
 import '../../domain/entities/reliability_tracker.dart';
+import '../../domain/entities/spoken_address.dart';
 import '../../domain/repositories/location_repository.dart';
 import '../../domain/repositories/track_recorder.dart';
 import '../providers/location_providers.dart';
@@ -183,34 +184,45 @@ class LocationController extends Notifier<LocationState> {
   }
 
   /// Respuesta a `get_location`: lo que el asistente puede decir de la posición.
-  Future<String> describeForAssistant() async {
+  /// Con [canSee] en `false` (pantalla bloqueada o sin cámara) no se le pide
+  /// sumar lo que ve: en la caminata de CP-LAZA-45, "together with what you
+  /// see" lo llevó a describir una calle que no veía (HU-017).
+  Future<String> describeForAssistant({bool canSee = true}) async {
     // La persona pudo activar la ubicación o dar el permiso después de iniciar
     // la sesión: se reintenta antes de responder que no está disponible.
     if (!running) await start();
+    final instead = canSee
+        ? ' and describe what you see instead.'
+        : '. The camera is paused: do not describe anything around them.';
     final permission = state.permission;
     if (permission != null && permission != LocationPermissionStatus.granted) {
       return 'unavailable: the app has no location permission or the GPS is '
-          'off. Tell the person you do not know their location and describe '
-          'what you see instead.';
+          'off. Tell the person you do not know their location$instead';
     }
     final fix = state.fix;
     if (fix == null) {
       return 'unavailable: no GPS position yet. Tell the person you do not know '
-          'their location yet and describe what you see instead.';
+          'their location yet$instead';
     }
     final accuracy = fix.accuracyM.toStringAsFixed(0);
     if (state.reliability == GpsReliability.unreliable) {
       return 'unreliable: the GPS is not reliable here (accuracy ±$accuracy m). '
           'Tell the person, in one sentence, that you cannot be sure of their '
-          'position right now, and describe what you see instead.';
+          'position right now$instead';
     }
     final address = await _repo.addressOf(fix);
-    final where = address ?? 'no street address available';
+    final where = address == null
+        ? 'no street address available'
+        // Leída tal cual: con "# 14C-80" repetía "catorce ce" (CP-LAZA-45).
+        : '$address (say it exactly as: "${spokenAddress(address)}")';
+    final seen = canSee
+        ? ', together with what you see.'
+        : '. The camera is paused: say only the street and area and do not '
+              'describe anything around them.';
     return 'ok: approximate address: $where; accuracy ±$accuracy m; '
         'coordinates ${fix.latitude.toStringAsFixed(5)}, '
         '${fix.longitude.toStringAsFixed(5)}. Tell the person where they are in '
-        'one or two short sentences (street and area, not coordinates), '
-        'together with what you see.';
+        'one or two short sentences (street and area, not coordinates)$seen';
   }
 }
 

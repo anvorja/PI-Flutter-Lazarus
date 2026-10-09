@@ -30,7 +30,13 @@ class MediaRepositoryImpl implements MediaRepository {
 
   @override
   Future<MediaAccess> requestPermissions() async {
-    final statuses = await [Permission.microphone, Permission.camera].request();
+    // Notificaciones (Android 13+): sin ellas no se ve "Lazarus está activo" ni
+    // su botón Detener (HU-017); la sesión funciona igual si se niega.
+    final statuses = await [
+      Permission.microphone,
+      Permission.camera,
+      Permission.notification,
+    ].request();
     final mic = statuses[Permission.microphone];
     final microphone = mic != null && mic.isGranted
         ? MediaPermission.granted

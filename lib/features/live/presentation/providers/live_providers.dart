@@ -11,9 +11,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../data/repositories/background_session_repository_impl.dart';
 import '../../data/repositories/live_session_repository_impl.dart';
 import '../../data/repositories/live_settings_repository_impl.dart';
 import '../../data/repositories/media_repository_impl.dart';
+import '../../domain/repositories/background_session_repository.dart';
 import '../../domain/repositories/live_session_repository.dart';
 import '../../domain/repositories/live_settings_repository.dart';
 import '../../domain/repositories/media_repository.dart';
@@ -43,6 +45,12 @@ final liveSessionRepositoryProvider = Provider<LiveSessionRepository>((ref) {
 final mediaRepositoryProvider = Provider<MediaRepository>((ref) {
   return MediaRepositoryImpl();
 });
+
+/// Servicio en primer plano para seguir con la pantalla bloqueada (HU-017).
+final backgroundSessionRepositoryProvider =
+    Provider<BackgroundSessionRepository>((ref) {
+      return BackgroundSessionRepositoryImpl();
+    });
 
 /// Voces de la síntesis del sistema por idioma de la app.
 const _ttsLocales = {
@@ -134,6 +142,12 @@ final observeAfterReplyProvider = Provider<Duration>(
 /// Si tras un `[OBSERVA]` el asistente no responde en este tiempo, calló.
 final observeTimeoutProvider = Provider<Duration>(
   (ref) => const Duration(seconds: 8),
+);
+
+/// Espera tras desbloquear la pantalla antes de volver a la sesión con cámara
+/// (HU-017): un desbloqueo sin querer en el bolsillo no corta la conversación.
+final cameraUnlockDelayProvider = Provider<Duration>(
+  (ref) => const Duration(milliseconds: 1500),
 );
 
 final liveControllerProvider = NotifierProvider<LiveController, LiveUiState>(

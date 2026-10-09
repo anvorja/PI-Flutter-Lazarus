@@ -55,6 +55,9 @@ void main() {
         sharedPreferencesProvider.overrideWithValue(prefs),
         liveSessionRepositoryProvider.overrideWithValue(session),
         mediaRepositoryProvider.overrideWithValue(FakeMediaRepository()),
+        backgroundSessionRepositoryProvider.overrideWithValue(
+          FakeBackgroundSession(),
+        ),
         locationRepositoryProvider.overrideWithValue(gps),
         trackRecorderProvider.overrideWithValue(track),
         locationClockProvider.overrideWithValue(() => t0),
@@ -111,7 +114,26 @@ void main() {
     expect(text, startsWith('ok:'));
     expect(text, contains('Calle 13, Meléndez, Cali'));
     expect(text, contains('±4 m'));
+    expect(text, contains('say it exactly as: "Calle 13, Meléndez, Cali"'));
   });
+
+  test(
+    'sin cámara: da la dirección sin pedirle que describa (HU-017)',
+    () async {
+      await location().start();
+      for (var s = 0; s <= 6; s += 2) {
+        await emit(4, s);
+      }
+      final text = await location().describeForAssistant(canSee: false);
+      expect(text, contains('Calle 13, Meléndez, Cali'));
+      expect(text, isNot(contains('what you see')));
+      expect(text, contains('do not describe'));
+      expect(
+        await location().describeForAssistant(),
+        contains('together with what you see'),
+      );
+    },
+  );
 
   test('no confiable: lo dice en lugar de dar una posición', () async {
     await location().start();

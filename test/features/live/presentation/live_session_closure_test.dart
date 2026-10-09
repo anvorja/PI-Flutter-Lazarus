@@ -26,6 +26,9 @@ void main() {
         sharedPreferencesProvider.overrideWithValue(prefs),
         liveSessionRepositoryProvider.overrideWithValue(session),
         mediaRepositoryProvider.overrideWithValue(FakeMediaRepository()),
+        backgroundSessionRepositoryProvider.overrideWithValue(
+          FakeBackgroundSession(),
+        ),
         locationRepositoryProvider.overrideWithValue(FakeLocationRepository()),
         trackRecorderProvider.overrideWithValue(FakeTrackRecorder()),
         announcerProvider.overrideWithValue((m, _) => announcements.add(m)),

@@ -43,6 +43,15 @@ const String observeTrigger = '[OBSERVA]';
 /// Igual que [observeTrigger] con las descripciones en pausa: solo riesgos.
 const String observeRisksTrigger = '[OBSERVA_RIESGOS]';
 
+/// Pantalla bloqueada (HU-017): primer mensaje de la sesión sin imágenes que se
+/// abre al bloquear; el asistente avisa que sigue sin ver (lo interpreta el
+/// system prompt).
+const String cameraPausedTrigger = '[SIN_CAMARA]';
+
+/// Pantalla desbloqueada: primer mensaje de la sesión con cámara que se abre al
+/// desbloquear (lo interpreta el system prompt).
+const String cameraResumedTrigger = '[CAMARA]';
+
 /// Opciones de conexión del cliente Live.
 class GeminiLiveClientOptions {
   const GeminiLiveClientOptions({
@@ -54,6 +63,7 @@ class GeminiLiveClientOptions {
     this.verbosity,
     this.describing,
     this.camera = true,
+    this.screenLocked = false,
     this.onResponse,
     this.onOpen,
     this.onClose,
@@ -79,6 +89,10 @@ class GeminiLiveClientOptions {
 
   /// `false` si la persona no dio permiso de cámara (sesión solo audio).
   final bool camera;
+
+  /// `true` = sesión abierta con la pantalla bloqueada: no recibe imágenes y el
+  /// asistente lo sabe desde el system prompt (HU-017).
+  final bool screenLocked;
 
   final void Function(LiveResponse message)? onResponse;
   final void Function()? onOpen;
@@ -165,6 +179,7 @@ class GeminiLiveClient {
       if (_opts.verbosity != null) 'verbosity': _opts.verbosity,
       if (_opts.describing == false) 'describing': false,
       if (!_opts.camera) 'camera': false,
+      if (_opts.screenLocked) 'screenLocked': true,
     });
   }
 
@@ -234,6 +249,12 @@ class GeminiLiveClient {
 
   /// Alerta SOS enviada sin confirmación: el asistente comunica el resultado.
   void sendSosResult(String result) => sendText('$sosTrigger $result');
+
+  /// Pantalla bloqueada: la cámara se detuvo.
+  void sendCameraPaused() => sendText(cameraPausedTrigger);
+
+  /// Pantalla desbloqueada: la cámara volvió.
+  void sendCameraResumed() => sendText(cameraResumedTrigger);
 
   /// Ciclo de observación: va por el mismo flujo de la cámara
   /// (`realtime_input`). Enviado como `client_content`, el modelo responde sin

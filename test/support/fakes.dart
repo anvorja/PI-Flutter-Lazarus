@@ -8,6 +8,7 @@ import 'package:app/features/emergency/domain/repositories/emergency_repository.
 import 'package:app/features/live/domain/entities/live_close.dart';
 import 'package:app/features/live/domain/entities/live_message.dart';
 import 'package:app/features/live/domain/entities/media_permission.dart';
+import 'package:app/features/live/domain/repositories/background_session_repository.dart';
 import 'package:app/features/live/domain/repositories/live_session_repository.dart';
 import 'package:app/features/live/domain/repositories/media_repository.dart';
 import 'package:app/features/location/domain/entities/location_fix.dart';
@@ -17,6 +18,7 @@ import 'package:app/features/location/domain/repositories/track_recorder.dart';
 class FakeLiveSessionRepository implements LiveSessionRepository {
   int connectCalls = 0;
   bool? lastCamera;
+  bool? lastScreenLocked;
   final List<String> sentImages = [];
   int kickoffs = 0;
   int micResumed = 0;
@@ -46,6 +48,7 @@ class FakeLiveSessionRepository implements LiveSessionRepository {
     String? verbosity,
     bool? describing,
     bool camera = true,
+    bool screenLocked = false,
     required void Function(LiveResponse message) onResponse,
     required void Function(LiveCloseCause cause) onClose,
     required void Function(Object error) onError,
@@ -58,6 +61,7 @@ class FakeLiveSessionRepository implements LiveSessionRepository {
     lastVerbosity = verbosity;
     lastDescribing = describing;
     lastCamera = camera;
+    lastScreenLocked = screenLocked;
     _connected = true;
     _onResponse = onResponse;
     _onClose = onClose;
@@ -110,6 +114,16 @@ class FakeLiveSessionRepository implements LiveSessionRepository {
 
   @override
   void sendSosResult(String result) => sosResults.add(result);
+
+  /// Primeros mensajes de sesión sin cámara (`false`) y con cámara de vuelta
+  /// (`true`), en orden.
+  final List<bool> cameraNotices = [];
+
+  @override
+  void sendCameraPaused() => cameraNotices.add(false);
+
+  @override
+  void sendCameraResumed() => cameraNotices.add(true);
 
   int observes = 0;
   final List<bool> observeRisksOnly = [];
@@ -281,5 +295,57 @@ class FakeEmergencyRepository implements EmergencyRepository {
   Future<bool> dial(String number) async {
     dials.add(number);
     return true;
+  }
+}
+
+/// Servicio en primer plano falso (HU-017): registra arranques y paradas, y
+/// permite simular el "Detener" de la notificación.
+class FakeBackgroundSession implements BackgroundSessionRepository {
+  FakeBackgroundSession({
+    this.exempt = true,
+    this.manufacturer = 'xiaomi',
+    this.startAllowed = true,
+  });
+
+  bool exempt;
+  String manufacturer;
+  bool startAllowed;
+  bool running = false;
+  int starts = 0;
+  int stops = 0;
+  int exemptionRequests = 0;
+
+  /// Lo que la persona responde en el diálogo de batería.
+  bool grantExemption = true;
+  void Function()? _onStop;
+
+  @override
+  Future<bool> start() async {
+    starts++;
+    running = startAllowed;
+    return startAllowed;
+  }
+
+  @override
+  Future<void> stop() async {
+    stops++;
+    running = false;
+  }
+
+  @override
+  void onStopRequested(void Function() callback) => _onStop = callback;
+
+  /// Simula que la persona pulsó "Detener" en la notificación.
+  void pressStopInNotification() => _onStop?.call();
+
+  @override
+  Future<BatteryStatus> batteryStatus() async =>
+      (exempt: exempt, manufacturer: manufacturer);
+
+  @override
+  Future<bool> requestBatteryExemption() async {
+    exemptionRequests++;
+    exempt = grantExemption;
+    return exempt;
   }
 }

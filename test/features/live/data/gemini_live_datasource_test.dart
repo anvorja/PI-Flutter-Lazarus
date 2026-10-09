@@ -58,4 +58,43 @@ void main() {
     expect(start['type'], 'start');
     expect(start['camera'], isFalse);
   });
+
+  Future<Map<String, dynamic>> startFrame(
+    GeminiLiveClientOptions Function(String url) options,
+  ) async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    final firstFrame = Completer<Map<String, dynamic>>();
+    server.listen((request) async {
+      final socket = await WebSocketTransformer.upgrade(request);
+      socket.listen((data) {
+        if (!firstFrame.isCompleted) {
+          firstFrame.complete(
+            jsonDecode(data as String) as Map<String, dynamic>,
+          );
+        }
+      });
+    });
+    final client = GeminiLiveClient(
+      options('ws://127.0.0.1:${server.port}/ws/live'),
+    )..connect();
+    addTearDown(client.disconnect);
+    return firstFrame.future.timeout(const Duration(seconds: 2));
+  }
+
+  test('con la pantalla bloqueada el frame start lo indica (HU-017)', () async {
+    final start = await startFrame(
+      (url) =>
+          GeminiLiveClientOptions(url: url, language: 'es', screenLocked: true),
+    );
+    expect(start['screenLocked'], isTrue);
+    expect(start.containsKey('camera'), isFalse, reason: 'el permiso sigue');
+  });
+
+  test('con la pantalla desbloqueada no se envía screenLocked', () async {
+    final start = await startFrame(
+      (url) => GeminiLiveClientOptions(url: url, language: 'es'),
+    );
+    expect(start.containsKey('screenLocked'), isFalse);
+  });
 }
