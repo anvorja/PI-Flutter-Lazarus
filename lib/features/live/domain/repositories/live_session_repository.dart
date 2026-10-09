@@ -26,6 +26,9 @@ abstract class LiveSessionRepository {
 
     /// `false` = sin permiso de cámara: el asistente trabaja solo con audio.
     bool camera = true,
+
+    /// `true` = sesión con la pantalla bloqueada: sin imágenes desde el inicio.
+    bool screenLocked = false,
     required void Function(LiveResponse message) onResponse,
     required void Function(LiveCloseCause cause) onClose,
     required void Function(Object error) onError,
@@ -54,6 +57,13 @@ abstract class LiveSessionRepository {
   /// Alerta SOS enviada sola (sin respuesta a la confirmación): le pasa el
   /// resultado al asistente para que se lo diga a la persona.
   void sendSosResult(String result);
+
+  /// Primer mensaje de una sesión abierta con la pantalla bloqueada (HU-017):
+  /// el asistente avisa que sigue sin ver.
+  void sendCameraPaused();
+
+  /// Primer mensaje de la sesión abierta al desbloquear: la cámara volvió.
+  void sendCameraResumed();
 
   /// Ciclo de observación: pide al asistente que mire la imagen actual y avise
   /// solo si hay un riesgo o algo nuevo (HU-040).

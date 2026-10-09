@@ -16,6 +16,7 @@ const String _voiceKey = 'lazarus_voice';
 const String _verbosityKey = 'lazarus_verbosity';
 const String _describingKey = 'lazarus_describing';
 const String _cuesMutedKey = 'lazarus_system_cues_muted';
+const String _batteryAskedKey = 'lazarus_battery_exemption_asked';
 
 const String defaultAssistantName = 'Aria';
 
@@ -90,4 +91,11 @@ class LiveSettingsRepositoryImpl implements LiveSettingsRepository {
   @override
   Future<void> setSystemCuesMuted(bool muted) =>
       _prefs.setString(_cuesMutedKey, muted.toString());
+
+  @override
+  bool getBatteryExemptionAsked() => _prefs.getBool(_batteryAskedKey) ?? false;
+
+  @override
+  Future<void> setBatteryExemptionAsked() =>
+      _prefs.setBool(_batteryAskedKey, true);
 }

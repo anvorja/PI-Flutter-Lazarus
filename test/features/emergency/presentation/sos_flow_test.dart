@@ -114,6 +114,9 @@ void main() {
         sharedPreferencesProvider.overrideWithValue(prefs),
         liveSessionRepositoryProvider.overrideWithValue(session),
         mediaRepositoryProvider.overrideWithValue(media),
+        backgroundSessionRepositoryProvider.overrideWithValue(
+          FakeBackgroundSession(),
+        ),
         locationRepositoryProvider.overrideWithValue(gps),
         trackRecorderProvider.overrideWithValue(FakeTrackRecorder()),
         locationClockProvider.overrideWithValue(() => t0),

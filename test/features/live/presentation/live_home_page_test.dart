@@ -28,6 +28,9 @@ void main() {
           sharedPreferencesProvider.overrideWithValue(prefs),
           liveSessionRepositoryProvider.overrideWithValue(session),
           mediaRepositoryProvider.overrideWithValue(media),
+          backgroundSessionRepositoryProvider.overrideWithValue(
+            FakeBackgroundSession(),
+          ),
           locationRepositoryProvider.overrideWithValue(
             FakeLocationRepository(),
           ),

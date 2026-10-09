@@ -26,6 +26,7 @@ class LiveSessionRepositoryImpl implements LiveSessionRepository {
     String? verbosity,
     bool? describing,
     bool camera = true,
+    bool screenLocked = false,
     required void Function(LiveResponse message) onResponse,
     required void Function(LiveCloseCause cause) onClose,
     required void Function(Object error) onError,
@@ -42,6 +43,7 @@ class LiveSessionRepositoryImpl implements LiveSessionRepository {
         verbosity: verbosity,
         describing: describing,
         camera: camera,
+        screenLocked: screenLocked,
         onResponse: onResponse,
         onClose: (code) {
           // Solo olvida el cliente si sigue siendo el actual (no uno más nuevo).
@@ -85,6 +87,12 @@ class LiveSessionRepositoryImpl implements LiveSessionRepository {
 
   @override
   void sendSosResult(String result) => _client?.sendSosResult(result);
+
+  @override
+  void sendCameraPaused() => _client?.sendCameraPaused();
+
+  @override
+  void sendCameraResumed() => _client?.sendCameraResumed();
 
   @override
   void sendObserve({bool risksOnly = false}) =>
