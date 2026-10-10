@@ -61,8 +61,10 @@ jobs:
           if [ -z "$BACKEND_URL" ]; then echo "::error::Falta el secreto BACKEND_URL"; exit 1; fi
           # El número de compilación sube en cada ejecución: la versión nueva se
           # instala encima de la anterior sin desinstalar.
+          # FIELD_EVIDENCE: las versiones del piloto guardan el registro, el
+          # recorrido y las fotos recientes para la evidencia de las pruebas.
           flutter build apk --release --build-number=${{ github.run_number }} \
-            --dart-define=BACKEND_URL="$BACKEND_URL"
+            --dart-define=BACKEND_URL="$BACKEND_URL" --dart-define=FIELD_EVIDENCE=true
 
       - name: Verificar que no salió firmado con la clave de debug
         run: |

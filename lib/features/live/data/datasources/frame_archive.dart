@@ -1,9 +1,9 @@
 /// Fotos recientes de la cámara guardadas como evidencia de las pruebas (solo
-/// en builds de depuración): las de los últimos [FrameArchive.maxFrames]
+/// con evidencia de campo, ver `field_evidence.dart`): las de los últimos [FrameArchive.maxFrames]
 /// segundos, con la hora en el nombre, para comparar lo que vio el asistente con
 /// lo que dijo. Las más viejas se borran solas.
 ///
-///   adb exec-out run-as com.lazarus.app tar c files/frames > frames.tar
+///   adb pull /sdcard/Android/data/com.lazarus.app/files/frames
 library;
 
 import 'dart:io';

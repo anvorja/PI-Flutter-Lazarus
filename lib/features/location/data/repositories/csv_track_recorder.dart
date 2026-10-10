@@ -1,7 +1,7 @@
-/// [TrackRecorder] que escribe el recorrido en un CSV dentro de la carpeta
-/// privada de la app. En un build de depuración se lee sin root:
+/// [TrackRecorder] que escribe el recorrido en un CSV en la carpeta de la
+/// evidencia de campo (ver `field_evidence.dart`):
 ///
-///   adb exec-out run-as com.lazarus.app cat files/gps_track.csv
+///   adb pull /sdcard/Android/data/com.lazarus.app/files/gps_track.csv
 ///
 /// Cada línea se escribe y se vuelca al disco en el momento (una cada ~2 s):
 /// si la app se cierra de golpe en la calle, el recorrido hasta ahí queda.
@@ -19,7 +19,7 @@ const String gpsTrackHeader = 'tramo,hora,latitud,longitud,precision_m,estado';
 class CsvTrackRecorder implements TrackRecorder {
   CsvTrackRecorder(this._directory);
 
-  /// Carpeta donde vive el archivo (en la app: `getApplicationSupportDirectory`).
+  /// Carpeta donde vive el archivo (en la app: `evidenceDirectory`).
   final Future<Directory> Function() _directory;
 
   File? _file;
