@@ -1,0 +1,91 @@
+name: CD — distribución a testers
+
+# TASK-013: cada rama release/* (o una ejecución manual) compila el APK de release
+# firmado, apuntando al backend desplegado, y lo envía por Firebase App
+# Distribution solo al grupo de testers invitados (el repo es público: el APK no
+# se publica aquí).
+on:
+  push:
+    branches: ["release/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  distribuir:
+    name: APK release firmado → Firebase App Distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar Java 17 (Gradle)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Instalar Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Dependencias
+        run: flutter pub get
+
+      - name: Pruebas (flutter test)
+        run: flutter test
+
+      - name: Firma de release (keystore desde los secretos)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "::error::Faltan los secretos KEYSTORE_BASE64 o KEYSTORE_PASSWORD"; exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/upload.jks"
+          printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=lazarus-upload\nstoreFile=%s\n' \
+            "$KEYSTORE_PASSWORD" "$KEYSTORE_PASSWORD" "$RUNNER_TEMP/upload.jks" > android/key.properties
+
+      - name: Build APK release
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+        run: |
+          if [ -z "$BACKEND_URL" ]; then echo "::error::Falta el secreto BACKEND_URL"; exit 1; fi
+          # El número de compilación sube en cada ejecución: la versión nueva se
+          # instala encima de la anterior sin desinstalar.
+          flutter build apk --release --build-number=${{ github.run_number }} \
+            --dart-define=BACKEND_URL="$BACKEND_URL"
+
+      - name: Verificar que no salió firmado con la clave de debug
+        run: |
+          if keytool -printcert -jarfile build/app/outputs/flutter-apk/app-release.apk | grep -q "CN=Android Debug"; then
+            echo "::error::El APK quedó firmado con la clave de debug"; exit 1
+          fi
+
+      - name: Distribuir a los testers
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          FIREBASE_APP_ID: ${{ vars.FIREBASE_APP_ID }}
+          RAMA: ${{ github.ref_name }}
+        run: |
+          if [ -z "$FIREBASE_SERVICE_ACCOUNT" ] || [ -z "$FIREBASE_APP_ID" ]; then
+            echo "::error::Faltan el secreto FIREBASE_SERVICE_ACCOUNT o la variable FIREBASE_APP_ID"; exit 1
+          fi
+          echo "$FIREBASE_SERVICE_ACCOUNT" > "$RUNNER_TEMP/firebase.json"
+          export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/firebase.json"
+          NOTAS="$RAMA (compilación ${{ github.run_number }}): $(git log -1 --pretty=%s)"
+          npx --yes firebase-tools@15.32.1 appdistribution:distribute \
+            build/app/outputs/flutter-apk/app-release.apk \
+            --app "$FIREBASE_APP_ID" --groups piloto --release-notes "$NOTAS"
+
+      - name: Borrar la firma y la credencial del runner
+        if: always()
+        run: rm -f "$RUNNER_TEMP/upload.jks" "$RUNNER_TEMP/firebase.json" android/key.properties
