@@ -117,29 +117,34 @@ adb -s <IP>:<PUERTO> logcat -v time flutter:I LazarusSos:V *:S | tee ~/prueba-<c
 
 ### 3. Evidencia que queda en el teléfono
 
-En los builds de depuración la app guarda su propia evidencia, que no depende de que
-el teléfono siga conectado al PC (pruebas en la calle):
+En depuración y en las versiones del piloto (el CD las compila con
+`--dart-define=FIELD_EVIDENCE=true`), la app guarda su propia evidencia, que no
+depende de que el teléfono siga conectado al PC (pruebas en la calle). Va a la carpeta
+externa propia de la app, que ninguna otra app puede leer y que se baja con `adb pull`
+aunque la versión release no sea depurable (`run-as` no funciona con ella):
 
 ```bash
+E=/sdcard/Android/data/com.lazarus.app/files
+
 # Trazas [Lazarus] de la app con la hora (5 MB; el anterior queda en lazarus.log.1)
-adb exec-out run-as com.lazarus.app cat files/lazarus.log > ~/lazarus.log
+adb pull $E/lazarus.log ~/lazarus.log
 
-# Telemetría sin contenido de la persona (también en distribución): eventos de
+# Telemetría sin contenido de la persona (en todas las versiones): eventos de
 # sesión y latencia voz a voz (mediana y percentil 90 al cerrar cada sesión)
-adb exec-out run-as com.lazarus.app cat files/telemetry.jsonl > ~/telemetria.jsonl
+adb pull $E/telemetry.jsonl ~/telemetria.jsonl
 
-# Recorrido del GPS: una fila cada ~2 s con precisión y estado
-adb exec-out run-as com.lazarus.app cat files/gps_track.csv > ~/recorrido.csv
+# Recorrido del GPS: una fila cada ~2 s con precisión y estado (hora en UTC)
+adb pull $E/gps_track.csv ~/recorrido.csv
 
 # Fotos que recibió el asistente en los últimos 10 minutos, con la hora en el nombre
-adb exec-out run-as com.lazarus.app tar c files/frames > ~/fotos.tar
+adb pull $E/frames ~/fotos
 
 # Registro completo del sistema (p. ej. el envío de SMS), sin captura previa:
 adb logcat -d -v time > ~/sistema.log
 ```
 
-En producción no se guarda nada de esto, y la cámara borra cada foto después de
-enviarla.
+En una versión sin `FIELD_EVIDENCE` solo se guarda la telemetría, y la cámara borra
+cada foto después de enviarla.
 
 ### 4. Lista de verificación del teléfono (MIUI / HyperOS)
 

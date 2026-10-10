@@ -1,11 +1,10 @@
 import 'dart:io';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'core/debug/field_evidence.dart';
 import 'core/debug/file_log.dart';
 import 'core/telemetry/session_telemetry.dart';
 import 'features/live/presentation/pages/live_home_page.dart';
@@ -13,8 +12,8 @@ import 'features/live/presentation/providers/live_providers.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final dir = await getApplicationSupportDirectory();
-  if (kDebugMode) {
+  final dir = await evidenceDirectory();
+  if (kFieldEvidence) {
     // Evidencia de las pruebas en la calle, sin depender del PC.
     FileLog(File('${dir.path}/$fileLogName')).install();
   }

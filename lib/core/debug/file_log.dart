@@ -1,9 +1,9 @@
-/// Copia en un archivo del teléfono de las trazas `[Lazarus]` (solo en builds
-/// de depuración), para las pruebas en la calle sin el PC conectado: en la
+/// Copia en un archivo del teléfono de las trazas `[Lazarus]` (solo con
+/// evidencia de campo, ver `field_evidence.dart`), para las pruebas en la calle sin el PC conectado: en la
 /// prueba de CP-LAZA-39 el búfer de logcat se llenó con mensajes del sistema y
 /// se perdió la conversación del recorrido.
 ///
-///   adb exec-out run-as com.lazarus.app cat files/lazarus.log > lazarus.log
+///   adb pull /sdcard/Android/data/com.lazarus.app/files/lazarus.log
 ///
 /// Al llegar a [maxBytes] el archivo pasa a `lazarus.log.1` (se conserva el
 /// anterior) y empieza uno nuevo.
