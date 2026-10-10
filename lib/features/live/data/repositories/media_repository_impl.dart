@@ -3,7 +3,6 @@
 /// nativo de ruta de audio).
 library;
 
-import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 
@@ -15,16 +14,17 @@ import '../datasources/audio_route_datasource.dart' as audio_route;
 import '../datasources/frame_archive.dart';
 import '../datasources/video_capture_datasource.dart';
 import '../../../../core/debug/live_debug.dart';
+import '../../../../core/debug/field_evidence.dart';
 
 class MediaRepositoryImpl implements MediaRepository {
   AudioStreamer? _audioStreamer;
   AudioPlayer? _audioPlayer;
   VideoStreamer? _videoStreamer;
 
-  /// Evidencia de las pruebas: las fotos de los últimos 10 minutos, solo en
-  /// depuración. En producción no se guarda ninguna.
-  final FrameArchive? _archive = kDebugMode
-      ? FrameArchive(getApplicationSupportDirectory)
+  /// Evidencia de las pruebas: las fotos de los últimos 10 minutos, solo con
+  /// evidencia de campo. En otra versión no se guarda ninguna.
+  final FrameArchive? _archive = kFieldEvidence
+      ? FrameArchive(evidenceDirectory)
       : null;
   bool _cacheCleaned = false;
 

@@ -1,11 +1,13 @@
-/// Trazas de diagnóstico `[Lazarus]` (HU-015): solo en builds de depuración.
-/// En un build de distribución no se escribe nada en logcat: las trazas llevan
-/// lo que oyó y dijo el asistente, y eso no debe salir del modo de pruebas.
+/// Trazas de diagnóstico `[Lazarus]` (HU-015): en depuración y en las versiones
+/// del piloto con evidencia de campo. En otra versión no se escribe nada en
+/// logcat: las trazas llevan lo que oyó y dijo el asistente.
 library;
 
 import 'package:flutter/foundation.dart';
 
-const bool kLiveDebug = kDebugMode;
+import 'field_evidence.dart';
+
+const bool kLiveDebug = kFieldEvidence;
 
 void liveLog(String message) {
   if (kLiveDebug) debugPrint(message);

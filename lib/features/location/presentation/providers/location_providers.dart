@@ -2,9 +2,7 @@
 /// controllers solo leen estos providers; en pruebas se sustituyen por fakes.
 library;
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../data/repositories/csv_track_recorder.dart';
@@ -12,16 +10,17 @@ import '../../data/repositories/location_repository_impl.dart';
 import '../../domain/repositories/location_repository.dart';
 import '../../domain/repositories/track_recorder.dart';
 import '../controllers/location_controller.dart';
+import '../../../../core/debug/field_evidence.dart';
 
 final locationRepositoryProvider = Provider<LocationRepository>(
   (ref) => LocationRepositoryImpl(),
 );
 
-/// Registro del recorrido en CSV: solo en builds de depuración (pruebas en
-/// campo); en producción no se guarda la ubicación.
+/// Registro del recorrido en CSV: solo con evidencia de campo (depuración y
+/// versiones del piloto); en otra versión no se guarda la ubicación.
 final trackRecorderProvider = Provider<TrackRecorder>(
-  (ref) => kDebugMode
-      ? CsvTrackRecorder(getApplicationSupportDirectory)
+  (ref) => kFieldEvidence
+      ? CsvTrackRecorder(evidenceDirectory)
       : const NoTrackRecorder(),
 );
 

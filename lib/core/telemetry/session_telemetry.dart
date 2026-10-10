@@ -1,9 +1,9 @@
 /// Telemetría de sesión (HU-015): eventos y latencias en JSON, una línea por
-/// evento, en `files/telemetry.jsonl`. No lleva audio, imágenes ni texto de la
-/// persona ni del asistente: solo tipos de evento, nombres de función, códigos
-/// de cierre y tiempos.
+/// evento, en `telemetry.jsonl` (carpeta de la evidencia de campo). No lleva
+/// audio, imágenes ni texto de la persona ni del asistente: solo tipos de
+/// evento, nombres de función, códigos de cierre y tiempos.
 ///
-///   adb exec-out run-as com.lazarus.app cat files/telemetry.jsonl
+///   adb pull /sdcard/Android/data/com.lazarus.app/files/telemetry.jsonl
 library;
 
 import 'dart:convert';
