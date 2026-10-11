@@ -14,8 +14,8 @@ void main() {
   File csv() => File('${dir.path}/$gpsTrackFileName');
 
   LocationFix fix(double accuracyM, int second) => LocationFix(
-    latitude: 3.389294,
-    longitude: -76.530191,
+    latitude: 3.451294,
+    longitude: -76.512191,
     accuracyM: accuracyM,
     at: DateTime(2026, 9, 30, 10, 0, second),
   );
@@ -37,7 +37,7 @@ void main() {
       final lines = csv().readAsLinesSync();
       expect(lines.first, gpsTrackHeader);
       expect(lines, hasLength(3));
-      expect(lines[2], endsWith(',3.389294,-76.530191,3.9,reliable'));
+      expect(lines[2], endsWith(',3.451294,-76.512191,3.9,reliable'));
     },
   );
 

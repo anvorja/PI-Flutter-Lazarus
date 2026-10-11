@@ -33,6 +33,23 @@ flutter pub get
 flutter run --dart-define=BACKEND_URL=http://<ip-del-backend>:8000
 ```
 
+## Sin datos móviles y SOS por gesto (HU-042)
+
+| Situación | Qué hace la app |
+| --- | --- |
+| Se apagan los datos con la sesión activa | Lo dice enseguida con la voz del teléfono: "Me quedé sin datos móviles…", cómo pedir ayuda con el gesto y que el recorrido se sigue registrando. No se puede silenciar por voz |
+| Sigue sin datos | No gasta reintentos contra el servidor y lo recuerda cada 90 s |
+| Vuelven los datos | Se reconecta sola, con la confirmación corta del asistente (sin repetir el saludo) |
+| Hay datos pero el servidor no responde | Dice el aviso del servidor ("Perdí la conexión con el servidor. Reintentando.") |
+| **Mantener presionada la pantalla 3 s** | SOS sin el asistente, con o sin datos. Pregunta "Alerta de emergencia para…"; **otro gesto la envía ya**, **un toque la cancela** y, sin respuesta, se envía sola (como en HU-012). Sin contacto, abre el marcador con el 123 |
+
+- Un toque normal, o uno largo de menos de 3 s, no inicia el SOS.
+- Con TalkBack, el SOS se activa tocando dos veces y manteniendo.
+- Con la sesión activa, el SOS la pausa para que el asistente no hable encima, y luego se
+  retoma sola.
+- El estado de la red se lee con `connectivity_plus`, que solo usa el permiso normal
+  `ACCESS_NETWORK_STATE`.
+
 ## Pruebas en el teléfono físico (QA)
 
 Así se preparan las pruebas de los casos de QA (CP-LAZA-n) en el teléfono del piloto.

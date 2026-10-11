@@ -213,7 +213,7 @@ class LocationController extends Notifier<LocationState> {
     final address = await _repo.addressOf(fix);
     final where = address == null
         ? 'no street address available'
-        // Leída tal cual: con "# 14C-80" repetía "catorce ce" (CP-LAZA-45).
+        // Leída tal cual: con "# 12B-80" repetía "doce be" (CP-LAZA-45).
         : '$address (say it exactly as: "${spokenAddress(address)}")';
     final seen = canSee
         ? ', together with what you see.'

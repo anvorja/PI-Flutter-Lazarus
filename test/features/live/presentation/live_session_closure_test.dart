@@ -25,6 +25,7 @@ void main() {
       overrides: [
         sharedPreferencesProvider.overrideWithValue(prefs),
         liveSessionRepositoryProvider.overrideWithValue(session),
+        networkStatusRepositoryProvider.overrideWithValue(FakeNetworkStatus()),
         mediaRepositoryProvider.overrideWithValue(FakeMediaRepository()),
         backgroundSessionRepositoryProvider.overrideWithValue(
           FakeBackgroundSession(),
@@ -32,6 +33,7 @@ void main() {
         locationRepositoryProvider.overrideWithValue(FakeLocationRepository()),
         trackRecorderProvider.overrideWithValue(FakeTrackRecorder()),
         announcerProvider.overrideWithValue((m, _) => announcements.add(m)),
+        announcerStopProvider.overrideWithValue(() {}),
         retryDelayProvider.overrideWithValue((_) => Duration.zero),
       ],
     );
