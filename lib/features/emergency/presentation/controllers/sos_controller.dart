@@ -140,6 +140,37 @@ class SosController extends Notifier<SosStatus> {
     }
   }
 
+  /// Nombre del contacto para decirlo en voz alta, o `null` si no hay contacto.
+  String? contactName() {
+    final contact = _repo.getContact();
+    if (contact == null) return null;
+    return contact.name.isEmpty ? 'tu contacto de emergencia' : contact.name;
+  }
+
+  /// SOS con el gesto, sin el asistente (HU-042): queda esperando la
+  /// confirmación (otro gesto) y, si no llega en [sosGestureWindowProvider],
+  /// se envía sola, igual que en HU-012. El resultado va a [onAutoSent].
+  bool startByGesture(void Function(String result) onAutoSent) {
+    if (state != SosStatus.idle || _repo.getContact() == null) return false;
+    state = SosStatus.awaitingConfirmation;
+    _autoSend = true;
+    _onAutoSent = onAutoSent;
+    _countdownStarted = DateTime.now();
+    _log('[Lazarus] SOS por gesto: esperando confirmación');
+    _armCountdown(ref.read(sosGestureWindowProvider));
+    return true;
+  }
+
+  /// La persona confirmó la alerta pendiente (con el gesto): se envía ya.
+  Future<String> sendNow() async {
+    final contact = _repo.getContact();
+    if (state != SosStatus.awaitingConfirmation || contact == null) {
+      return 'failed: there was no alert waiting to be sent.';
+    }
+    _log('[Lazarus] SOS por gesto: confirmado por la persona');
+    return _send(contact);
+  }
+
   /// Arranca la cuenta de la confirmación (cuando ya sonó la pregunta). Al
   /// vencer, envía la alerta y entrega el resultado a [onAutoSent].
   void startCountdown(void Function(String result) onAutoSent) {

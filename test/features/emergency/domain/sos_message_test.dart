@@ -45,18 +45,18 @@ void main() {
         language: 'es',
         userName: 'Andrés',
         position: SosPosition(
-          latitude: 3.389270,
-          longitude: -76.530190,
+          latitude: 3.451270,
+          longitude: -76.512190,
           accuracyM: 4.6,
           at: at,
           current: true,
-          address: 'Carrera 76 # 14C-101, Comuna 17, Cali',
+          address: 'Carrera 42 # 12B-101, Comuna 9, Cali',
         ),
       );
       expect(
         text,
-        'SOS de Andres: necesito ayuda. Estoy en Carrera 76 # 14C-101, '
-        'Comuna 17, Cali. Coordenadas 3.38927,-76.53019 (precision 5 m, '
+        'SOS de Andres: necesito ayuda. Estoy en Carrera 42 # 12B-101, '
+        'Comuna 9, Cali. Coordenadas 3.45127,-76.51219 (precision 5 m, '
         '09:05). Enviado por Lazarus.',
       );
       // Los operadores no entregaron ningún SMS con enlace.
@@ -69,14 +69,14 @@ void main() {
         language: 'es',
         userName: '',
         position: SosPosition(
-          latitude: 3.38927,
-          longitude: -76.53019,
+          latitude: 3.45127,
+          longitude: -76.51219,
           accuracyM: 5,
           at: at,
           current: true,
         ),
       );
-      expect(text, contains('Estoy en Coordenadas 3.38927,-76.53019'));
+      expect(text, contains('Estoy en Coordenadas 3.45127,-76.51219'));
     });
 
     test('GPS no confiable: última posición conocida con su hora', () {
@@ -84,8 +84,8 @@ void main() {
         language: 'es',
         userName: '',
         position: SosPosition(
-          latitude: 3.38927,
-          longitude: -76.53019,
+          latitude: 3.45127,
+          longitude: -76.51219,
           accuracyM: 6,
           at: at,
           current: false,
@@ -96,7 +96,7 @@ void main() {
         text,
         contains(
           'ultima ubicacion conocida (09:05, precision 6 m): '
-          'Coordenadas 3.38927,-76.53019.',
+          'Coordenadas 3.45127,-76.51219.',
         ),
       );
     });
@@ -120,8 +120,8 @@ void main() {
       language: 'es',
       userName: 'José Ñúñez',
       position: SosPosition(
-        latitude: 3.389270,
-        longitude: -76.530190,
+        latitude: 3.451270,
+        longitude: -76.512190,
         accuracyM: 12,
         at: DateTime(2026, 9, 30, 9, 5),
         current: true,

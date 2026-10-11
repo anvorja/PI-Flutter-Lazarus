@@ -54,6 +54,7 @@ void main() {
       overrides: [
         sharedPreferencesProvider.overrideWithValue(prefs),
         liveSessionRepositoryProvider.overrideWithValue(session),
+        networkStatusRepositoryProvider.overrideWithValue(FakeNetworkStatus()),
         mediaRepositoryProvider.overrideWithValue(FakeMediaRepository()),
         backgroundSessionRepositoryProvider.overrideWithValue(
           FakeBackgroundSession(),
@@ -65,6 +66,7 @@ void main() {
           (on) async => screenAwake.add(on),
         ),
         announcerProvider.overrideWithValue((_, _) {}),
+        announcerStopProvider.overrideWithValue(() {}),
         retryDelayProvider.overrideWithValue((_) => Duration.zero),
       ],
     );

@@ -1,3 +1,5 @@
+import 'package:app/features/emergency/domain/entities/emergency_contact.dart';
+import 'package:app/features/emergency/presentation/providers/emergency_providers.dart';
 import 'package:app/features/live/presentation/controllers/live_controller.dart';
 import 'package:app/features/live/presentation/pages/live_home_page.dart';
 import 'package:app/features/live/presentation/providers/live_providers.dart';
@@ -15,6 +17,7 @@ void main() {
   late FakeLiveSessionRepository session;
   late FakeMediaRepository media;
   late List<String> announcements;
+  late FakeEmergencyRepository emergency;
 
   Future<void> pumpApp(WidgetTester tester) async {
     SharedPreferences.setMockInitialValues({});
@@ -22,11 +25,18 @@ void main() {
     session = FakeLiveSessionRepository();
     media = FakeMediaRepository();
     announcements = [];
+    // Contacto de prueba (datos ficticios).
+    emergency = FakeEmergencyRepository(
+      contact: const EmergencyContact(name: 'Marta', phone: '+573001112233'),
+    );
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
           sharedPreferencesProvider.overrideWithValue(prefs),
           liveSessionRepositoryProvider.overrideWithValue(session),
+          networkStatusRepositoryProvider.overrideWithValue(
+            FakeNetworkStatus(),
+          ),
           mediaRepositoryProvider.overrideWithValue(media),
           backgroundSessionRepositoryProvider.overrideWithValue(
             FakeBackgroundSession(),
@@ -36,6 +46,8 @@ void main() {
           ),
           trackRecorderProvider.overrideWithValue(FakeTrackRecorder()),
           announcerProvider.overrideWithValue((m, _) => announcements.add(m)),
+          announcerStopProvider.overrideWithValue(() {}),
+          emergencyRepositoryProvider.overrideWithValue(emergency),
         ],
         child: const LazarusApp(),
       ),
@@ -135,5 +147,52 @@ void main() {
     await tester.pump();
     expect(session.connectCalls, 1);
     semantics.dispose();
+  });
+
+  group('SOS con el gesto (HU-042)', () {
+    testWidgets('criterio 5: un toque normal con la sesión activa no inicia '
+        'el SOS', (tester) async {
+      await pumpApp(tester);
+      await startSession(tester);
+      await tester.tapAt(const Offset(40, 120));
+      await tester.pump();
+      expect(
+        announcements,
+        isNot(
+          contains(
+            noticeText(LiveNotice.sosGestureConfirm, 'es', name: 'Marta'),
+          ),
+        ),
+      );
+    });
+
+    testWidgets('un toque largo de 1 s tampoco lo inicia', (tester) async {
+      await pumpApp(tester);
+      final gesture = await tester.startGesture(const Offset(40, 120));
+      await tester.pump(const Duration(seconds: 1));
+      await gesture.up();
+      await tester.pump();
+      expect(announcements, isEmpty);
+    });
+
+    testWidgets('mantener presionado 3 s inicia el SOS y pregunta', (
+      tester,
+    ) async {
+      await pumpApp(tester);
+      final gesture = await tester.startGesture(const Offset(40, 120));
+      await tester.pump(const Duration(milliseconds: 3100));
+      await gesture.up();
+      await tester.pump();
+      expect(
+        announcements.last,
+        noticeText(LiveNotice.sosGestureConfirm, 'es', name: 'Marta'),
+      );
+      expect(find.textContaining('Alerta SOS'), findsOneWidget);
+      // Cancela para no dejar la cuenta corriendo.
+      await tester.tapAt(const Offset(40, 120));
+      await tester.pump();
+      expect(announcements.last, noticeText(LiveNotice.sosCancelled, 'es'));
+      expect(emergency.sms, isEmpty);
+    });
   });
 }

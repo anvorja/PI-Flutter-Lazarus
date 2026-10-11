@@ -29,7 +29,7 @@ class SosPosition {
   /// `true` = posición actual con GPS confiable; `false` = última conocida.
   final bool current;
 
-  /// Dirección aproximada ("Carrera 76 # 14C-101, Comuna 17, Cali"), si el
+  /// Dirección aproximada ("Carrera 42 # 12B-101, Comuna 9, Cali"), si el
   /// geocodificador respondió a tiempo.
   final String? address;
 
@@ -42,7 +42,7 @@ class SosPosition {
     address: address,
   );
 
-  /// "3.38927,-76.53019": 5 decimales, alrededor de un metro.
+  /// "3.45127,-76.51219": 5 decimales, alrededor de un metro.
   String get coordinates =>
       '${latitude.toStringAsFixed(5)},${longitude.toStringAsFixed(5)}';
 }

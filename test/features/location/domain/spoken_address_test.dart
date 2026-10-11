@@ -1,4 +1,4 @@
-/// La dirección se dice sin el bloque "# 14C-80", que el asistente repetía.
+/// La dirección se dice sin el bloque "# 12B-80", que el asistente repetía.
 library;
 
 import 'package:app/features/location/domain/entities/spoken_address.dart';
@@ -7,30 +7,30 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   test('separa la letra, quita el numeral y el guion', () {
     expect(
-      spokenAddress('Carrera 76 # 14C-80, Comuna 17, Cali'),
-      'Carrera 76 número 14 C 80, Comuna 17, Cali',
+      spokenAddress('Carrera 42 # 12B-80, Comuna 9, Cali'),
+      'Carrera 42 número 12 B 80, Comuna 9, Cali',
     );
     expect(
-      spokenAddress('Calle 14c # 75-25, Comuna 17, Cali'),
-      'Calle 14 C número 75 25, Comuna 17, Cali',
+      spokenAddress('Calle 12b # 41-25, Comuna 9, Cali'),
+      'Calle 12 B número 41 25, Comuna 9, Cali',
     );
     expect(
-      spokenAddress('Carrera 76 # 14C-101, Comuna 17, Cali'),
-      'Carrera 76 número 14 C 101, Comuna 17, Cali',
+      spokenAddress('Carrera 42 # 12B-101, Comuna 9, Cali'),
+      'Carrera 42 número 12 B 101, Comuna 9, Cali',
     );
   });
 
   test('placa sin guion del geocodificador', () {
     expect(
-      spokenAddress('Calle 14c # 7615, Comuna 17, Cali'),
-      'Calle 14 C número 76 15, Comuna 17, Cali',
+      spokenAddress('Calle 12b # 4315, Comuna 9, Cali'),
+      'Calle 12 B número 43 15, Comuna 9, Cali',
     );
   });
 
   test('cruce de vías', () {
     expect(
-      spokenAddress('Carrera 77 # Calle 15, Comuna 17, Cali'),
-      'Carrera 77 con Calle 15, Comuna 17, Cali',
+      spokenAddress('Carrera 43 # Calle 13, Comuna 9, Cali'),
+      'Carrera 43 con Calle 13, Comuna 9, Cali',
     );
   });
 

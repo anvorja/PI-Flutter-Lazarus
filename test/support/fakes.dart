@@ -11,6 +11,7 @@ import 'package:app/features/live/domain/entities/media_permission.dart';
 import 'package:app/features/live/domain/repositories/background_session_repository.dart';
 import 'package:app/features/live/domain/repositories/live_session_repository.dart';
 import 'package:app/features/live/domain/repositories/media_repository.dart';
+import 'package:app/features/live/domain/repositories/network_status_repository.dart';
 import 'package:app/features/location/domain/entities/location_fix.dart';
 import 'package:app/features/location/domain/repositories/location_repository.dart';
 import 'package:app/features/location/domain/repositories/track_recorder.dart';
@@ -348,4 +349,23 @@ class FakeBackgroundSession implements BackgroundSessionRepository {
     exempt = grantExemption;
     return exempt;
   }
+}
+
+/// Red de datos simulada (HU-042): [setOnline] emite el cambio como el sistema.
+class FakeNetworkStatus implements NetworkStatusRepository {
+  FakeNetworkStatus({this.online = true});
+
+  bool online;
+  final StreamController<bool> _changes = StreamController<bool>.broadcast();
+
+  void setOnline(bool value) {
+    online = value;
+    _changes.add(value);
+  }
+
+  @override
+  Future<bool> isOnline() async => online;
+
+  @override
+  Stream<bool> onlineChanges() => _changes.stream;
 }

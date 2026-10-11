@@ -89,8 +89,8 @@ void main() {
     for (var s = 0; s <= 6; s += 2) {
       gps.fixes.add(
         LocationFix(
-          latitude: 3.38927,
-          longitude: -76.53019,
+          latitude: 3.45127,
+          longitude: -76.51219,
           accuracyM: 5,
           at: t0.add(Duration(seconds: s)),
         ),
@@ -105,7 +105,7 @@ void main() {
     session = FakeLiveSessionRepository();
     media = FakeMediaRepository();
     gps = FakeLocationRepository(
-      address: 'Carrera 76 # 14C-101, Comuna 17, Cali',
+      address: 'Carrera 42 # 12B-101, Comuna 9, Cali',
     );
     emergency = FakeEmergencyRepository();
     announcements = [];
@@ -113,6 +113,7 @@ void main() {
       overrides: [
         sharedPreferencesProvider.overrideWithValue(prefs),
         liveSessionRepositoryProvider.overrideWithValue(session),
+        networkStatusRepositoryProvider.overrideWithValue(FakeNetworkStatus()),
         mediaRepositoryProvider.overrideWithValue(media),
         backgroundSessionRepositoryProvider.overrideWithValue(
           FakeBackgroundSession(),
@@ -126,6 +127,7 @@ void main() {
         sosMaxWaitProvider.overrideWithValue(window * 4),
         sosAnswerWindowProvider.overrideWithValue(window * 2),
         announcerProvider.overrideWithValue((m, _) => announcements.add(m)),
+        announcerStopProvider.overrideWithValue(() {}),
         retryDelayProvider.overrideWithValue((_) => Duration.zero),
       ],
     );
@@ -198,8 +200,8 @@ void main() {
       expect(
         emergency.sms.single.text,
         contains(
-          'Estoy en Carrera 76 # 14C-101, Comuna 17, Cali. Coordenadas '
-          '3.38927,-76.53019 (precision 5 m, 09:00)',
+          'Estoy en Carrera 42 # 12B-101, Comuna 9, Cali. Coordenadas '
+          '3.45127,-76.51219 (precision 5 m, 09:00)',
         ),
       );
       await wait(fallback + window * 2);

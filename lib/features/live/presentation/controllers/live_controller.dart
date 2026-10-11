@@ -19,6 +19,7 @@ import '../../domain/repositories/background_session_repository.dart';
 import '../../domain/repositories/live_session_repository.dart';
 import '../../domain/repositories/live_settings_repository.dart';
 import '../../domain/repositories/media_repository.dart';
+import '../../domain/repositories/network_status_repository.dart';
 import '../../../emergency/domain/repositories/emergency_repository.dart';
 import '../../../emergency/presentation/controllers/sos_controller.dart';
 import '../../../emergency/presentation/providers/emergency_providers.dart';
@@ -170,6 +171,17 @@ enum LiveNotice {
   /// ajuste del fabricante.
   batteryExemption,
   batteryExemptionXiaomi,
+
+  /// Sin datos móviles (HU-042): lo dice el teléfono, porque el asistente no
+  /// puede hablar sin red. No se puede silenciar (aviso de seguridad).
+  noData,
+  noDataReminder,
+
+  /// SOS con el gesto, sin el asistente (HU-042). `{name}`: el contacto.
+  sosGestureConfirm,
+  sosCancelled,
+  sosUnconfirmed,
+  sosNoContact,
 }
 
 /// Avisos informativos que la persona puede silenciar por voz (`set_system_cues`).
@@ -205,6 +217,17 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Antes de empezar: para que siga contigo con la pantalla bloqueada, permite que Lazarus funcione sin restricciones de batería. Luego toca la pantalla para empezar.',
     LiveNotice.batteryExemptionXiaomi:
         'Antes de empezar: para que siga contigo con la pantalla bloqueada, permite que Lazarus funcione sin restricciones de batería. En los teléfonos Xiaomi, además, en Ajustes, Aplicaciones, Lazarus, Ahorro de batería, elige Sin restricciones. Luego toca la pantalla para empezar.',
+    LiveNotice.noData:
+        'Me quedé sin datos móviles y no puedo hablar con el asistente. Para pedir ayuda, mantén presionada la pantalla tres segundos. Tu recorrido se sigue registrando y me reconecto cuando vuelvan los datos.',
+    LiveNotice.noDataReminder:
+        'Sigo sin datos móviles. Para pedir ayuda, mantén presionada la pantalla tres segundos.',
+    LiveNotice.sosGestureConfirm:
+        'Alerta de emergencia para {name}. Para enviarla ya, vuelve a mantener presionada la pantalla. Para cancelar, toca una vez. Si no haces nada, se envía en unos segundos.',
+    LiveNotice.sosCancelled: 'Alerta cancelada.',
+    LiveNotice.sosUnconfirmed:
+        'Envié la alerta, pero la red no confirmó que llegó. Si puedes, llama a tu contacto o al 123.',
+    LiveNotice.sosNoContact:
+        'No tienes contacto de emergencia. Abro el marcador con el 123: el botón de llamar está abajo, en el centro de la pantalla.',
   },
   'en': {
     LiveNotice.retrying: 'I lost the connection to the server. Retrying.',
@@ -231,6 +254,17 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Before we start: so I can stay with you with the screen locked, allow Lazarus to run without battery restrictions. Then tap the screen to start.',
     LiveNotice.batteryExemptionXiaomi:
         'Before we start: so I can stay with you with the screen locked, allow Lazarus to run without battery restrictions. On Xiaomi phones, also go to Settings, Apps, Lazarus, Battery saver, and choose No restrictions. Then tap the screen to start.',
+    LiveNotice.noData:
+        'I lost mobile data and cannot talk to the assistant. To ask for help, press and hold the screen for three seconds. Your route is still being recorded and I will reconnect when data comes back.',
+    LiveNotice.noDataReminder:
+        'Still no mobile data. To ask for help, press and hold the screen for three seconds.',
+    LiveNotice.sosGestureConfirm:
+        'Emergency alert for {name}. To send it now, press and hold the screen again. To cancel, tap once. If you do nothing, it is sent in a few seconds.',
+    LiveNotice.sosCancelled: 'Alert cancelled.',
+    LiveNotice.sosUnconfirmed:
+        'I sent the alert, but the network did not confirm it arrived. If you can, call your contact or 123.',
+    LiveNotice.sosNoContact:
+        'You have no emergency contact. I am opening the dialer with 123: the call button is at the bottom center of the screen.',
   },
   'fr': {
     LiveNotice.retrying: 'J\'ai perdu la connexion au serveur. Nouvel essai.',
@@ -257,6 +291,17 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Avant de commencer : pour rester avec toi écran verrouillé, autorise Lazarus à fonctionner sans restriction de batterie. Ensuite, touche l\'écran pour commencer.',
     LiveNotice.batteryExemptionXiaomi:
         'Avant de commencer : pour rester avec toi écran verrouillé, autorise Lazarus à fonctionner sans restriction de batterie. Sur les téléphones Xiaomi, va aussi dans Paramètres, Applications, Lazarus, Économiseur de batterie, et choisis Aucune restriction. Ensuite, touche l\'écran pour commencer.',
+    LiveNotice.noData:
+        'Je n\'ai plus de données mobiles et je ne peux pas parler à l\'assistant. Pour demander de l\'aide, maintiens l\'écran appuyé trois secondes. Ton trajet est toujours enregistré et je me reconnecte quand les données reviennent.',
+    LiveNotice.noDataReminder:
+        'Toujours pas de données mobiles. Pour demander de l\'aide, maintiens l\'écran appuyé trois secondes.',
+    LiveNotice.sosGestureConfirm:
+        'Alerte d\'urgence pour {name}. Pour l\'envoyer maintenant, maintiens de nouveau l\'écran appuyé. Pour annuler, touche une fois. Si tu ne fais rien, elle part dans quelques secondes.',
+    LiveNotice.sosCancelled: 'Alerte annulée.',
+    LiveNotice.sosUnconfirmed:
+        'J\'ai envoyé l\'alerte, mais le réseau n\'a pas confirmé qu\'elle est arrivée. Si tu peux, appelle ton contact ou le 123.',
+    LiveNotice.sosNoContact:
+        'Tu n\'as pas de contact d\'urgence. J\'ouvre le clavier avec le 123 : le bouton d\'appel est en bas, au centre de l\'écran.',
   },
   'pt': {
     LiveNotice.retrying: 'Perdi a conexão com o servidor. Tentando de novo.',
@@ -283,6 +328,17 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Antes de começar: para eu continuar com você com a tela bloqueada, permita que o Lazarus funcione sem restrições de bateria. Depois toque na tela para começar.',
     LiveNotice.batteryExemptionXiaomi:
         'Antes de começar: para eu continuar com você com a tela bloqueada, permita que o Lazarus funcione sem restrições de bateria. Nos telefones Xiaomi, também vá em Configurações, Aplicativos, Lazarus, Economia de bateria, e escolha Sem restrições. Depois toque na tela para começar.',
+    LiveNotice.noData:
+        'Fiquei sem dados móveis e não consigo falar com o assistente. Para pedir ajuda, mantenha a tela pressionada por três segundos. Seu trajeto continua sendo registrado e eu me reconecto quando os dados voltarem.',
+    LiveNotice.noDataReminder:
+        'Continuo sem dados móveis. Para pedir ajuda, mantenha a tela pressionada por três segundos.',
+    LiveNotice.sosGestureConfirm:
+        'Alerta de emergência para {name}. Para enviar agora, mantenha a tela pressionada de novo. Para cancelar, toque uma vez. Se não fizer nada, ele é enviado em alguns segundos.',
+    LiveNotice.sosCancelled: 'Alerta cancelado.',
+    LiveNotice.sosUnconfirmed:
+        'Enviei o alerta, mas a rede não confirmou que chegou. Se puder, ligue para o seu contato ou para o 123.',
+    LiveNotice.sosNoContact:
+        'Você não tem contato de emergência. Vou abrir o discador com o 123: o botão de ligar fica embaixo, no centro da tela.',
   },
   'it': {
     LiveNotice.retrying: 'Ho perso la connessione al server. Riprovo.',
@@ -309,14 +365,28 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Prima di iniziare: per restare con te a schermo bloccato, consenti a Lazarus di funzionare senza restrizioni della batteria. Poi tocca lo schermo per iniziare.',
     LiveNotice.batteryExemptionXiaomi:
         'Prima di iniziare: per restare con te a schermo bloccato, consenti a Lazarus di funzionare senza restrizioni della batteria. Sui telefoni Xiaomi, vai anche in Impostazioni, App, Lazarus, Risparmio batteria, e scegli Nessuna restrizione. Poi tocca lo schermo per iniziare.',
+    LiveNotice.noData:
+        'Sono rimasto senza dati mobili e non posso parlare con l\'assistente. Per chiedere aiuto, tieni premuto lo schermo per tre secondi. Il tuo percorso continua a essere registrato e mi riconnetto quando tornano i dati.',
+    LiveNotice.noDataReminder:
+        'Ancora niente dati mobili. Per chiedere aiuto, tieni premuto lo schermo per tre secondi.',
+    LiveNotice.sosGestureConfirm:
+        'Avviso di emergenza per {name}. Per inviarlo subito, tieni premuto di nuovo lo schermo. Per annullare, tocca una volta. Se non fai nulla, viene inviato tra pochi secondi.',
+    LiveNotice.sosCancelled: 'Avviso annullato.',
+    LiveNotice.sosUnconfirmed:
+        'Ho inviato l\'avviso, ma la rete non ha confermato che sia arrivato. Se puoi, chiama il tuo contatto o il 123.',
+    LiveNotice.sosNoContact:
+        'Non hai un contatto di emergenza. Apro il tastierino con il 123: il pulsante di chiamata è in basso, al centro dello schermo.',
   },
 };
 
 /// Texto del aviso en el idioma de la persona (español si no está disponible).
-String noticeText(LiveNotice notice, String language) =>
-    (_notices[language] ?? _notices['es']!)[notice]!;
+/// [name] reemplaza `{name}` (el contacto de emergencia).
+String noticeText(LiveNotice notice, String language, {String name = ''}) =>
+    (_notices[language] ?? _notices['es']!)[notice]!.replaceAll('{name}', name);
 
-enum LiveStatus { idle, connecting, connected, error }
+/// `offline`: sin datos móviles, a la espera de que vuelvan (HU-042).
+/// `sos`: alerta SOS con el gesto, esperando confirmación (HU-042).
+enum LiveStatus { idle, connecting, connected, error, offline, sos }
 
 /// Qué disparar al completarse el setup: saludo normal, muestra de voz o
 /// confirmación de idioma (tras un cambio, sin repetir toda la presentación), o
@@ -350,7 +420,10 @@ class LiveUiState {
   final bool micMuted;
 
   bool get isLive =>
-      status == LiveStatus.connecting || status == LiveStatus.connected;
+      status == LiveStatus.connecting ||
+      status == LiveStatus.connected ||
+      status == LiveStatus.offline ||
+      status == LiveStatus.sos;
 
   String get statusLabel {
     if (micMuted) return 'Silencio total. Toca la pantalla para reactivar.';
@@ -362,6 +435,10 @@ class LiveUiState {
       LiveStatus.connecting => 'Conectando…',
       LiveStatus.connected => 'Escuchando',
       LiveStatus.error => 'Error de conexión. Toca para reintentar.',
+      LiveStatus.offline =>
+        'Sin datos móviles. Mantén presionado 3 segundos para pedir ayuda.',
+      LiveStatus.sos =>
+        'Alerta SOS: mantén presionado para enviarla ya, toca para cancelar.',
     };
   }
 
@@ -390,6 +467,18 @@ class LiveController extends Notifier<LiveUiState> {
   late final LiveSettingsRepository _settings;
   late final SessionTelemetry _telemetry;
   late final BackgroundSessionRepository _background;
+  late final NetworkStatusRepository _network;
+
+  /// El teléfono tiene datos (HU-042). Sin datos no se gastan reintentos.
+  bool _online = true;
+  StreamSubscription<bool>? _networkWatch;
+  Timer? _offlineReminder;
+
+  /// SOS iniciado con el gesto, esperando confirmación o enviándose (HU-042).
+  bool _sosByGesture = false;
+
+  /// Estado de la sesión antes del SOS por gesto, para retomarla después.
+  LiveStatus _statusBeforeSos = LiveStatus.idle;
 
   // Detalle interno de orquestación: no forma parte de LiveUiState porque la
   // UI no lo necesita para renderizar.
@@ -480,6 +569,21 @@ class LiveController extends Notifier<LiveUiState> {
     _telemetry = ref.read(sessionTelemetryProvider);
     _background = ref.read(backgroundSessionRepositoryProvider);
     _background.onStopRequested(_stopFromNotification);
+    _network = ref.read(networkStatusRepositoryProvider);
+    // Sin información de la red, la sesión funciona como antes de HU-042.
+    try {
+      _network.isOnline().then((online) => _online = online);
+      _networkWatch = _network.onlineChanges().listen(
+        _onNetworkChanged,
+        onError: (Object e) => _log('[Lazarus] red: sin información ($e)'),
+      );
+    } catch (e) {
+      _log('[Lazarus] red: sin información ($e)');
+    }
+    ref.onDispose(() {
+      _networkWatch?.cancel();
+      _offlineReminder?.cancel();
+    });
     ref.onDispose(_teardown);
     ref.onDispose(_stopBackground);
     ref.onDispose(() => _afterSpeechFallback?.cancel());
@@ -592,6 +696,140 @@ class LiveController extends Notifier<LiveUiState> {
     } else {
       _stopBackground();
     }
+  }
+
+  /// Cambio de la red de datos del teléfono (HU-042). Al quedarse sin datos
+  /// con la sesión activa, lo dice enseguida (criterio 1: menos de 5 s) sin
+  /// esperar a que la conexión falle; al volver, se reconecta sola.
+  void _onNetworkChanged(bool online) {
+    if (!ref.mounted || online == _online) return;
+    _online = online;
+    _log('[Lazarus] red: ${online ? "con datos" : "sin datos"}');
+    _telemetry.event('network', {'online': online});
+    if (!online) {
+      if (state.status == LiveStatus.connecting ||
+          state.status == LiveStatus.connected) {
+        _goOffline();
+      }
+    } else if (state.status == LiveStatus.offline) {
+      _backOnline();
+    }
+  }
+
+  /// Sin datos: cierra la sesión (no puede funcionar), avisa con el teléfono y
+  /// queda esperando. El GPS sigue registrando el recorrido.
+  void _goOffline() {
+    _teardown();
+    if (_everConnected) _pendingKickoff = _PendingKickoff.micOn;
+    state = state.copyWith(
+      status: LiveStatus.offline,
+      meetingMode: false,
+      micMuted: false,
+    );
+    _announce(LiveNotice.noData);
+    _startOfflineReminder();
+  }
+
+  /// Mientras no haya datos, lo recuerda cada cierto tiempo (regla 5).
+  void _startOfflineReminder() {
+    _offlineReminder?.cancel();
+    _offlineReminder = Timer.periodic(ref.read(offlineReminderProvider), (_) {
+      if (!ref.mounted || state.status != LiveStatus.offline) return;
+      _announce(LiveNotice.noDataReminder);
+    });
+  }
+
+  /// Volvieron los datos: se reconecta sola, con la confirmación corta del
+  /// asistente en lugar del saludo (criterio 3).
+  void _backOnline() {
+    _offlineReminder?.cancel();
+    _offlineReminder = null;
+    _retryAttempts = 0;
+    state = state.copyWith(status: LiveStatus.connecting);
+    _openSession(state.language);
+  }
+
+  /// Mantener presionada la pantalla (HU-042): SOS sin el asistente, con y sin
+  /// datos. La primera vez pregunta; un segundo gesto la envía ya, un toque la
+  /// cancela y, sin respuesta, se envía sola como en HU-012.
+  Future<void> onSosGesture() async {
+    final sos = ref.read(sosControllerProvider.notifier);
+    final pending = ref.read(sosControllerProvider);
+    if (_sosByGesture && pending == SosStatus.awaitingConfirmation) {
+      final result = await sos.sendNow();
+      _finishGestureSos(result);
+      return;
+    }
+    if (pending != SosStatus.idle) return; // ya hay una alerta en curso
+    final name = sos.contactName();
+    if (name == null) {
+      _log('[Lazarus] SOS por gesto: sin contacto; marcador con el 123');
+      _announce(LiveNotice.sosNoContact);
+      unawaited(sos.placeCall(CallTarget.emergency));
+      return;
+    }
+    _log('[Lazarus] SOS por gesto');
+    _telemetry.event('sos_gesture', {'online': _online});
+    // El asistente no debe hablar encima de la pregunta: la sesión se pausa y
+    // se retoma al terminar.
+    _statusBeforeSos = state.status;
+    if (state.status == LiveStatus.connecting ||
+        state.status == LiveStatus.connected) {
+      _teardown();
+      if (_everConnected) _pendingKickoff = _PendingKickoff.micOn;
+    }
+    _sosByGesture = true;
+    state = state.copyWith(
+      status: LiveStatus.sos,
+      meetingMode: false,
+      micMuted: false,
+    );
+    _announceText(
+      noticeText(LiveNotice.sosGestureConfirm, state.language, name: name),
+    );
+    sos.startByGesture(_finishGestureSos);
+  }
+
+  void _cancelGestureSos() {
+    ref.read(sosControllerProvider.notifier).cancel();
+    _announce(LiveNotice.sosCancelled);
+    _endGestureSos();
+  }
+
+  void _finishGestureSos(String result) {
+    if (!ref.mounted) return;
+    _announce(
+      result.startsWith('sent')
+          ? LiveNotice.sosSent
+          : result.startsWith('unconfirmed')
+          ? LiveNotice.sosUnconfirmed
+          : LiveNotice.sosFailed,
+    );
+    _endGestureSos();
+  }
+
+  /// Vuelve a como estaba antes del SOS: sin sesión, sin datos o con la sesión
+  /// (tras una pausa, para no tapar el aviso del resultado).
+  void _endGestureSos() {
+    _sosByGesture = false;
+    final before = _statusBeforeSos;
+    if (before == LiveStatus.idle || before == LiveStatus.error) {
+      state = state.copyWith(status: LiveStatus.idle);
+      return;
+    }
+    if (!_online) {
+      state = state.copyWith(status: LiveStatus.offline);
+      if (_offlineReminder == null) _startOfflineReminder();
+      return;
+    }
+    _offlineReminder?.cancel();
+    _offlineReminder = null;
+    state = state.copyWith(status: LiveStatus.connecting);
+    Future.delayed(ref.read(sosResumeDelayProvider), () {
+      if (!ref.mounted || state.status != LiveStatus.connecting) return;
+      _retryAttempts = 0;
+      _openSession(state.language);
+    });
   }
 
   /// La app dejó de verse (pantalla bloqueada u otra app encima) o volvió.
@@ -718,6 +956,12 @@ class LiveController extends Notifier<LiveUiState> {
     );
   }
 
+  /// Aviso ya armado (con el nombre del contacto, por ejemplo).
+  void _announceText(String text) {
+    _log('[Lazarus] aviso: $text');
+    ref.read(announcerProvider)(text, state.language);
+  }
+
   void _announce(LiveNotice notice) {
     if (mutableNotices.contains(notice) && _settings.getSystemCuesMuted()) {
       _log('[Lazarus] aviso silenciado: ${notice.name}');
@@ -772,6 +1016,11 @@ class LiveController extends Notifier<LiveUiState> {
   /// Sin conexión con el backend: avisa y reintenta con espera creciente; al
   /// agotar los reintentos deja el estado de error (tocar la pantalla reintenta).
   void _retryOrFail(String lang) {
+    // Sin datos no se gastan reintentos: se espera a que vuelvan (HU-042).
+    if (!_online) {
+      if (state.status != LiveStatus.offline) _goOffline();
+      return;
+    }
     if (_retryAttempts >= maxConnectionRetries) {
       _endTelemetry('connection_failed');
       state = state.copyWith(status: LiveStatus.error);
@@ -795,6 +1044,8 @@ class LiveController extends Notifier<LiveUiState> {
 
   /// Arranca mic + cámara una vez que el asistente confirma la sesión.
   Future<void> _startMedia() async {
+    // El micrófono no debe captar un aviso del teléfono que siga sonando.
+    ref.read(announcerStopProvider)();
     try {
       _onSpeaker = !(await _media.isHeadsetConnected());
       _assistantActive = false;
@@ -848,6 +1099,12 @@ class LiveController extends Notifier<LiveUiState> {
   /// Botón Detener: cierra la sesión, libera micrófono y cámara y avisa con una
   /// frase corta (sin reconectar).
   void disconnect() {
+    _offlineReminder?.cancel();
+    _offlineReminder = null;
+    if (_sosByGesture) {
+      _sosByGesture = false;
+      ref.read(sosControllerProvider.notifier).cancel();
+    }
     _teardown();
     _stopBackground();
     _endTelemetry('stopped');
@@ -867,6 +1124,12 @@ class LiveController extends Notifier<LiveUiState> {
   /// Toque en pantalla: si está en silencio total, reactiva el micrófono; si
   /// no, arranca la sesión cuando aún no está en marcha.
   void onTap() {
+    // Un toque cancela el SOS por gesto pendiente (HU-042).
+    if (_sosByGesture &&
+        ref.read(sosControllerProvider) == SosStatus.awaitingConfirmation) {
+      _cancelGestureSos();
+      return;
+    }
     if (state.micMuted) {
       _resumeFromMute();
     } else if (!state.isLive) {

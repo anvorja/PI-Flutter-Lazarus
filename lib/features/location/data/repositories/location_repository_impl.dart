@@ -68,7 +68,7 @@ class LocationRepositoryImpl implements LocationRepository {
 
 /// Dirección corta para decirla en voz alta: calle con número, barrio y
 /// ciudad, sin repetir partes. En Colombia el geocodificador pone la dirección
-/// completa en `street` ("Cra. 76 # 14C-101, Comuna 17, Cali, …"), así que se
+/// completa en `street` ("Cra. 42 # 12B-101, Comuna 9, Cali, …"), así que se
 /// arma con los campos separados y `street` solo se usa si faltan.
 String? formatAddress(Placemark p) {
   String? clean(String? s) {
@@ -77,7 +77,7 @@ String? formatAddress(Placemark p) {
   }
 
   final road = clean(p.thoroughfare);
-  // El número a veces ya trae el "#" ("# 14C-101").
+  // El número a veces ya trae el "#" ("# 12B-101").
   final number = clean(p.subThoroughfare?.replaceFirst(RegExp(r'^\s*#'), ''));
   final street = road != null
       ? (number != null ? '$road # $number' : road)
