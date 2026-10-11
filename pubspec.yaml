@@ -46,6 +46,7 @@ dependencies:
   geocoding: ^5.0.0
   path_provider: ^2.1.6
   wakelock_plus: ^1.8.0
+  connectivity_plus: ^7.3.1
 
 dev_dependencies:
   flutter_test:

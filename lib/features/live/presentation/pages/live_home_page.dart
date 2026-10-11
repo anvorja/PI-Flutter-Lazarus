@@ -3,11 +3,13 @@
 /// dispara acciones sobre su notifier. No conoce WebSockets, audio nativo ni
 /// cámara: solo el [LiveUiState] expuesto por el controller.
 ///
-/// Interfaz voz-first con solo dos acciones táctiles: tocar cualquier parte de la
-/// pantalla para iniciar y un botón grande "Detener" abajo. Todo lo demás se hace
+/// Interfaz voz-first con pocas acciones táctiles: tocar cualquier parte de la
+/// pantalla para iniciar, mantenerla presionada 3 s para el SOS sin el
+/// asistente (HU-042) y un botón grande "Detener" abajo. Todo lo demás se hace
 /// por voz.
 library;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -22,6 +24,10 @@ const Color stopButtonColor = Color(0xFFC62828);
 
 /// Lo que lee TalkBack sobre el botón.
 const String stopButtonSemanticsLabel = 'Detener asistente';
+
+/// Pista de TalkBack para el SOS: con TalkBack, tocar dos veces y mantener.
+const String sosGestureSemanticsHint =
+    'Mantén presionado para enviar una alerta SOS';
 
 class LiveHomePage extends ConsumerStatefulWidget {
   const LiveHomePage({super.key});
@@ -69,11 +75,32 @@ class _LiveHomePageState extends ConsumerState<LiveHomePage> {
                 container: true,
                 liveRegion: true,
                 label: state.statusLabel,
+                hint: sosGestureSemanticsHint,
                 onTap: controller.onTap,
-                child: GestureDetector(
-                  onTap: controller.onTap,
+                onLongPress: controller.onSosGesture,
+                child: RawGestureDetector(
                   behavior: HitTestBehavior.opaque,
                   excludeFromSemantics: true,
+                  gestures: {
+                    TapGestureRecognizer:
+                        GestureRecognizerFactoryWithHandlers<
+                          TapGestureRecognizer
+                        >(
+                          TapGestureRecognizer.new,
+                          (r) => r.onTap = controller.onTap,
+                        ),
+                    // SOS (HU-042): solo tras mantener presionado; un toque
+                    // normal no lo inicia (criterio 5).
+                    LongPressGestureRecognizer:
+                        GestureRecognizerFactoryWithHandlers<
+                          LongPressGestureRecognizer
+                        >(
+                          () => LongPressGestureRecognizer(
+                            duration: ref.read(sosGestureHoldProvider),
+                          ),
+                          (r) => r.onLongPress = controller.onSosGesture,
+                        ),
+                  },
                   child: Center(
                     child: Padding(
                       padding: const EdgeInsets.all(24),

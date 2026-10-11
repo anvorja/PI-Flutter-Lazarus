@@ -15,10 +15,12 @@ import '../../data/repositories/background_session_repository_impl.dart';
 import '../../data/repositories/live_session_repository_impl.dart';
 import '../../data/repositories/live_settings_repository_impl.dart';
 import '../../data/repositories/media_repository_impl.dart';
+import '../../data/repositories/network_status_repository_impl.dart';
 import '../../domain/repositories/background_session_repository.dart';
 import '../../domain/repositories/live_session_repository.dart';
 import '../../domain/repositories/live_settings_repository.dart';
 import '../../domain/repositories/media_repository.dart';
+import '../../domain/repositories/network_status_repository.dart';
 import '../controllers/live_controller.dart';
 import '../../../../core/debug/live_debug.dart';
 import '../../../../core/telemetry/session_telemetry.dart';
@@ -46,6 +48,34 @@ final mediaRepositoryProvider = Provider<MediaRepository>((ref) {
   return MediaRepositoryImpl();
 });
 
+/// Estado de la red de datos del teléfono (HU-042).
+final networkStatusRepositoryProvider = Provider<NetworkStatusRepository>(
+  (ref) => NetworkStatusRepositoryImpl(),
+);
+
+/// Cada cuánto se recuerda que sigue sin datos (HU-042, regla 5).
+final offlineReminderProvider = Provider<Duration>(
+  (ref) => const Duration(seconds: 90),
+);
+
+/// Cuánto hay que mantener presionada la pantalla para el SOS (HU-042): un
+/// toque normal, o uno largo sin querer, no lo inicia.
+final sosGestureHoldProvider = Provider<Duration>(
+  (ref) => const Duration(seconds: 3),
+);
+
+/// Tiempo desde la pregunta del SOS por gesto hasta que se envía sola: la
+/// frase dura unos 7 s y luego quedan los 5 s de HU-012.
+final sosGestureWindowProvider = Provider<Duration>(
+  (ref) => const Duration(seconds: 12),
+);
+
+/// Tras un SOS por gesto, espera antes de reconectar para que el aviso del
+/// resultado no se solape con el asistente.
+final sosResumeDelayProvider = Provider<Duration>(
+  (ref) => const Duration(seconds: 8),
+);
+
 /// Servicio en primer plano para seguir con la pantalla bloqueada (HU-017).
 final backgroundSessionRepositoryProvider =
     Provider<BackgroundSessionRepository>((ref) {
@@ -67,8 +97,7 @@ const _ttsLocales = {
 /// el aviso se oiga siempre. En pruebas se sustituye por un fake que lo registra.
 final announcerProvider =
     Provider<void Function(String message, String language)>((ref) {
-      final tts = FlutterTts();
-      ref.onDispose(tts.stop);
+      final tts = ref.watch(_systemTtsProvider);
       return (message, language) {
         HapticFeedback.heavyImpact();
         final dispatcher = WidgetsBinding.instance.platformDispatcher;
@@ -92,6 +121,24 @@ final announcerProvider =
             });
       };
     });
+
+/// Síntesis de voz del teléfono, compartida por el aviso y su corte.
+final _systemTtsProvider = Provider<FlutterTts>((ref) {
+  final tts = FlutterTts();
+  ref.onDispose(tts.stop);
+  return tts;
+});
+
+/// Corta el aviso del teléfono que siga sonando. Se usa al abrir el micrófono
+/// de una sesión nueva: si no, el asistente oye el aviso (p. ej. el de sin datos
+/// al volver la conexión) como si lo dijera la persona.
+final announcerStopProvider = Provider<void Function()>((ref) {
+  final tts = ref.watch(_systemTtsProvider);
+  return () => tts.stop().catchError((Object e) {
+    liveLog('[Lazarus] aviso: no se pudo cortar: $e');
+    return null;
+  });
+});
 
 /// Espera antes del reintento número [attempt] (0, 1, 2…): 1 s, 2 s, 4 s.
 final retryDelayProvider = Provider<Duration Function(int attempt)>((ref) {
