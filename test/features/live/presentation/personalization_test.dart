@@ -32,6 +32,7 @@ void main() {
         backgroundSessionRepositoryProvider.overrideWithValue(
           FakeBackgroundSession(),
         ),
+        compassRepositoryProvider.overrideWithValue(FakeCompassRepository()),
         locationRepositoryProvider.overrideWithValue(FakeLocationRepository()),
         trackRecorderProvider.overrideWithValue(FakeTrackRecorder()),
         announcerProvider.overrideWithValue((m, _) => announcements.add(m)),

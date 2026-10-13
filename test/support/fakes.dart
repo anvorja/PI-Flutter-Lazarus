@@ -12,7 +12,11 @@ import 'package:app/features/live/domain/repositories/background_session_reposit
 import 'package:app/features/live/domain/repositories/live_session_repository.dart';
 import 'package:app/features/live/domain/repositories/media_repository.dart';
 import 'package:app/features/live/domain/repositories/network_status_repository.dart';
+import 'package:app/features/field_notes/domain/entities/field_note.dart';
+import 'package:app/features/field_notes/domain/repositories/note_recorder.dart';
+import 'package:app/features/location/domain/entities/heading.dart';
 import 'package:app/features/location/domain/entities/location_fix.dart';
+import 'package:app/features/location/domain/repositories/compass_repository.dart';
 import 'package:app/features/location/domain/repositories/location_repository.dart';
 import 'package:app/features/location/domain/repositories/track_recorder.dart';
 
@@ -234,6 +238,29 @@ class FakeLocationRepository implements LocationRepository {
   Future<String?> addressOf(LocationFix fix) async => address;
 }
 
+/// Bitácora en memoria (HU-024).
+class FakeNoteRecorder implements NoteRecorder {
+  FakeNoteRecorder({this.enabled = true});
+
+  bool enabled;
+  final List<FieldNote> notes = [];
+
+  @override
+  Future<bool> add(FieldNote note) async {
+    if (enabled) notes.add(note);
+    return enabled;
+  }
+}
+
+/// Brújula falsa: las pruebas empujan lecturas.
+class FakeCompassRepository implements CompassRepository {
+  final StreamController<CompassReading> events =
+      StreamController<CompassReading>.broadcast();
+
+  @override
+  Stream<CompassReading> readings() => events.stream;
+}
+
 /// Grabador de recorrido en memoria.
 class FakeTrackRecorder implements TrackRecorder {
   int segments = 0;
@@ -246,9 +273,14 @@ class FakeTrackRecorder implements TrackRecorder {
     open = true;
   }
 
+  final List<Heading?> headings = [];
+
   @override
-  void record(LocationFix fix, GpsReliability reliability) {
-    if (open) rows.add((accuracyM: fix.accuracyM, reliability: reliability));
+  void record(LocationFix fix, GpsReliability reliability, [Heading? heading]) {
+    if (open) {
+      rows.add((accuracyM: fix.accuracyM, reliability: reliability));
+      headings.add(heading);
+    }
   }
 
   @override

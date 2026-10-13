@@ -23,6 +23,8 @@ import '../../domain/repositories/network_status_repository.dart';
 import '../../../emergency/domain/repositories/emergency_repository.dart';
 import '../../../emergency/presentation/controllers/sos_controller.dart';
 import '../../../emergency/presentation/providers/emergency_providers.dart';
+import '../../../field_notes/domain/entities/field_note.dart';
+import '../../../field_notes/presentation/providers/field_notes_providers.dart';
 import '../../../location/presentation/providers/location_providers.dart';
 import '../providers/live_providers.dart';
 import '../../../../core/debug/live_debug.dart';
@@ -589,6 +591,9 @@ class LiveController extends Notifier<LiveUiState> {
   /// La persona pidió salir del modo reunión llamándolo por su nombre: si el
   /// asistente no llama a `set_meeting_mode`, la app sale igual (LAZA-113).
   bool _leaveMeetingRequested = false;
+
+  /// Notas de campo dictadas desde el último Detener (HU-024).
+  int _notesThisSession = 0;
 
   /// La persona pidió "silencio total": si el asistente no llama a
   /// `set_microphone`, la app lo aplica igual al terminar su turno (privacidad).
@@ -1176,6 +1181,11 @@ class LiveController extends Notifier<LiveUiState> {
     _teardown();
     _stopBackground();
     _endTelemetry('stopped');
+    if (_notesThisSession > 0) {
+      final notas = _notesThisSession == 1 ? 'nota' : 'notas';
+      _log('[Lazarus] bitácora: $_notesThisSession $notas en esta sesión');
+      _notesThisSession = 0;
+    }
     ref.read(locationControllerProvider.notifier).stop();
     _everConnected = false;
     _pendingKickoff = _PendingKickoff.intro;
@@ -1566,6 +1576,45 @@ class LiveController extends Notifier<LiveUiState> {
     state = state.copyWith(micMuted: true);
   }
 
+  /// Guarda una nota de campo con la hora y la última posición conocida, y
+  /// devuelve la respuesta para el asistente (HU-024, criterio 3).
+  Future<String> _addFieldNote(String raw) async {
+    final text = raw.trim();
+    if (text.isEmpty) {
+      return 'error: the note is empty. Ask the person what to write down.';
+    }
+    final location = ref.read(locationControllerProvider);
+    final fix = location.fix;
+    final at = ref.read(liveClockProvider)();
+    final saved = await ref
+        .read(noteRecorderProvider)
+        .add(
+          FieldNote(
+            at: at,
+            text: text,
+            fix: fix,
+            reliability: location.reliability,
+          ),
+        );
+    if (!saved) {
+      _log('[Lazarus] nota no guardada: "$text"');
+      return 'unavailable: this version of the app does not save notes. Tell '
+          'the person, in one sentence, that you could not write it down.';
+    }
+    _notesThisSession++;
+    String two(int n) => n.toString().padLeft(2, '0');
+    final time = '${two(at.hour)}:${two(at.minute)}';
+    final where = fix == null
+        ? 'sin posición'
+        : '±${fix.accuracyM.toStringAsFixed(0)} m, ${location.reliability.name}';
+    _log('[Lazarus] nota: "$text" ($time, $where)');
+    final position = fix == null
+        ? 'without position (no GPS yet)'
+        : 'with the position';
+    return 'ok: note saved at $time $position. Reply ONLY with one word '
+        'confirming it was written down.';
+  }
+
   /// Red de seguridad de "Aria, ya puedes hablar": el asistente respondió sin
   /// llamar a `set_meeting_mode`, así que la app sale del modo reunión igual
   /// (en la prueba de LAZA-113 dijo "Entendido" y siguió callado).
@@ -1777,6 +1826,24 @@ class LiveController extends Notifier<LiveUiState> {
                   _log('[Lazarus] ubicación para el asistente: $where');
                   results[call.id] = where;
                 }),
+          );
+        case 'get_heading':
+          // Hacia dónde mira la persona, o que pida calibrar (HU-016).
+          waits.add(
+            ref
+                .read(locationControllerProvider.notifier)
+                .describeHeadingForAssistant()
+                .then((heading) {
+                  _log('[Lazarus] rumbo para el asistente: $heading');
+                  results[call.id] = heading;
+                }),
+          );
+        case 'add_note':
+          // "Anota que la rampa está bloqueada" (HU-024).
+          waits.add(
+            _addFieldNote(
+              (call.args['text'] ?? '').toString(),
+            ).then((r) => results[call.id] = r),
           );
         case 'get_time':
           final time = describeLocalTime(ref.read(liveClockProvider)());

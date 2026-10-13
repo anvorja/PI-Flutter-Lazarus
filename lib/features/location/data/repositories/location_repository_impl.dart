@@ -44,6 +44,8 @@ class LocationRepositoryImpl implements LocationRepository {
         longitude: p.longitude,
         accuracyM: p.accuracy,
         at: p.timestamp,
+        speedMps: p.speed >= 0 ? p.speed : null,
+        courseDeg: p.heading >= 0 ? p.heading : null,
       ),
     );
   }
