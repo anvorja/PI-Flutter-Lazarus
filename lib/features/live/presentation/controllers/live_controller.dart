@@ -170,6 +170,26 @@ bool asksLeaveMeeting(String text) {
   return leaveMeetingPhrases.any(words.contains);
 }
 
+/// Respuesta de `get_time` (LAZA-115): la hora y la fecha del reloj del
+/// teléfono, que ya está en la zona horaria de la persona (en Colombia, UTC-5).
+/// El asistente no conoce la hora y, sin esto, decía la del servidor.
+String describeLocalTime(DateTime now) {
+  const weekdays = [
+    'monday',
+    'tuesday',
+    'wednesday',
+    'thursday',
+    'friday',
+    'saturday',
+    'sunday',
+  ];
+  String two(int n) => n.toString().padLeft(2, '0');
+  final date = '${now.year}-${two(now.month)}-${two(now.day)}';
+  return 'ok: hora local del teléfono ${two(now.hour)}:${two(now.minute)} '
+      '(formato de 24 horas), ${weekdays[now.weekday - 1]} $date. Dila en el '
+      'idioma de la persona, sin mencionar zonas horarias.';
+}
+
 /// Reintentos automáticos cuando no se puede conectar con el backend.
 const int maxConnectionRetries = 3;
 
@@ -1758,6 +1778,10 @@ class LiveController extends Notifier<LiveUiState> {
                   results[call.id] = where;
                 }),
           );
+        case 'get_time':
+          final time = describeLocalTime(ref.read(liveClockProvider)());
+          _log('[Lazarus] hora para el asistente: $time');
+          results[call.id] = time;
         case 'set_emergency_contact':
           waits.add(
             sos

@@ -37,6 +37,10 @@ void main() {
         announcerProvider.overrideWithValue((m, _) => announcements.add(m)),
         announcerStopProvider.overrideWithValue(() {}),
         retryDelayProvider.overrideWithValue((_) => Duration.zero),
+        // Hora local del teléfono, ya en su zona horaria (LAZA-115).
+        liveClockProvider.overrideWithValue(
+          () => DateTime(2026, 10, 13, 12, 23),
+        ),
       ],
     );
     addTearDown(c.dispose);
@@ -77,6 +81,23 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     prefs = await SharedPreferences.getInstance();
     container = open();
+  });
+
+  test('"¿qué hora es?": responde con la hora del teléfono, no la del '
+      'servidor (LAZA-115)', () async {
+    await startSession();
+    await toolCall('get_time', {});
+    final result = session.toolResponses.single.result;
+    expect(result, startsWith('ok'));
+    expect(result, contains('12:23'));
+    expect(result, contains('tuesday 2026-10-13'));
+    expect(result, isNot(contains('UTC')));
+  });
+
+  test('la hora se da en formato de 24 horas con dos dígitos', () {
+    expect(describeLocalTime(DateTime(2026, 1, 4, 7, 5)), contains('07:05'));
+    expect(describeLocalTime(DateTime(2026, 1, 4, 7, 5)), contains('sunday'));
+    expect(describeLocalTime(DateTime(2026, 1, 4, 19, 40)), contains('19:40'));
   });
 
   test(
