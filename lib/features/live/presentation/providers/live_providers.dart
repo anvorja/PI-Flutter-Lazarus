@@ -197,6 +197,9 @@ final cameraUnlockDelayProvider = Provider<Duration>(
   (ref) => const Duration(milliseconds: 1500),
 );
 
+/// Reloj del teléfono para `get_time` (LAZA-115); en pruebas se fija la hora.
+final liveClockProvider = Provider<DateTime Function()>((ref) => DateTime.now);
+
 final liveControllerProvider = NotifierProvider<LiveController, LiveUiState>(
   LiveController.new,
 );
