@@ -4,6 +4,7 @@ library;
 import 'dart:io';
 
 import 'package:app/features/location/data/repositories/csv_track_recorder.dart';
+import 'package:app/features/location/domain/entities/heading.dart';
 import 'package:app/features/location/domain/entities/location_fix.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -37,7 +38,7 @@ void main() {
       final lines = csv().readAsLinesSync();
       expect(lines.first, gpsTrackHeader);
       expect(lines, hasLength(3));
-      expect(lines[2], endsWith(',3.451294,-76.512191,3.9,reliable'));
+      expect(lines[2], endsWith(',3.451294,-76.512191,3.9,reliable,,,,'));
     },
   );
 
@@ -64,5 +65,45 @@ void main() {
     await recorder.end();
     recorder.record(fix(4, 0), GpsReliability.unknown);
     expect(csv().readAsLinesSync(), [gpsTrackHeader]);
+  });
+
+  test('anota la velocidad y el rumbo de la persona (HU-016)', () async {
+    await recorder.begin();
+    recorder.record(
+      LocationFix(
+        latitude: 0,
+        longitude: 0,
+        accuracyM: 4,
+        at: DateTime(2026, 10, 13, 15),
+        speedMps: 1.2,
+        courseDeg: 92,
+      ),
+      GpsReliability.reliable,
+      const Heading(degrees: 92, source: HeadingSource.gps),
+    );
+    recorder.record(
+      fix(4, 2),
+      GpsReliability.reliable,
+      const Heading(
+        degrees: 181.4,
+        source: HeadingSource.compass,
+        needsCalibration: true,
+      ),
+    );
+    final lines = csv().readAsLinesSync();
+    expect(lines[1], endsWith(',reliable,1.20,92,gps,no'));
+    expect(lines[2], endsWith(',reliable,,181,compass,si'));
+  });
+
+  test('un archivo con el encabezado anterior se guarda aparte', () async {
+    File(
+      '${dir.path}/$gpsTrackFileName',
+    ).writeAsStringSync('tramo,hora,latitud,longitud,precision_m,estado\nx\n');
+    await recorder.begin();
+    expect(csv().readAsLinesSync(), [gpsTrackHeader]);
+    expect(
+      File('${dir.path}/$gpsTrackPreviousFileName').readAsLinesSync(),
+      hasLength(2),
+    );
   });
 }

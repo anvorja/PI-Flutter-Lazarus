@@ -3,14 +3,16 @@
 /// depende de que el teléfono siga conectado al PC.
 library;
 
+import '../entities/heading.dart';
 import '../entities/location_fix.dart';
 
 abstract class TrackRecorder {
   /// Empieza un tramo nuevo (una sesión de GPS).
   Future<void> begin();
 
-  /// Anota una posición.
-  void record(LocationFix fix, GpsReliability reliability);
+  /// Anota una posición, con el rumbo de la persona en ese momento si se
+  /// conoce (HU-016).
+  void record(LocationFix fix, GpsReliability reliability, [Heading? heading]);
 
   /// Cierra el tramo y asegura que todo quede escrito.
   Future<void> end();
@@ -24,7 +26,11 @@ class NoTrackRecorder implements TrackRecorder {
   Future<void> begin() async {}
 
   @override
-  void record(LocationFix fix, GpsReliability reliability) {}
+  void record(
+    LocationFix fix,
+    GpsReliability reliability, [
+    Heading? heading,
+  ]) {}
 
   @override
   Future<void> end() async {}

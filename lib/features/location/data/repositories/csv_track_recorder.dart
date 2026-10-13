@@ -10,11 +10,18 @@ library;
 
 import 'dart:io';
 
+import '../../domain/entities/heading.dart';
 import '../../domain/entities/location_fix.dart';
 import '../../domain/repositories/track_recorder.dart';
 
 const String gpsTrackFileName = 'gps_track.csv';
-const String gpsTrackHeader = 'tramo,hora,latitud,longitud,precision_m,estado';
+const String gpsTrackHeader =
+    'tramo,hora,latitud,longitud,precision_m,estado,velocidad_ms,rumbo,'
+    'fuente_rumbo,calibrar_brujula';
+
+/// Recorridos con el encabezado anterior (sin rumbo, antes de HU-016): se
+/// conservan aparte para no mezclar columnas.
+const String gpsTrackPreviousFileName = 'gps_track_anterior.csv';
 
 class CsvTrackRecorder implements TrackRecorder {
   CsvTrackRecorder(this._directory);
@@ -29,13 +36,20 @@ class CsvTrackRecorder implements TrackRecorder {
   Future<void> begin() async {
     final dir = await _directory();
     final file = File('${dir.path}/$gpsTrackFileName');
+    if (file.existsSync() && !_hasCurrentHeader(file)) {
+      try {
+        file.renameSync('${dir.path}/$gpsTrackPreviousFileName');
+      } catch (_) {
+        // Si no se puede mover, se sigue en el mismo archivo.
+      }
+    }
     if (!file.existsSync()) _append(file, gpsTrackHeader);
     _segment = DateTime.now().toIso8601String();
     _file = file;
   }
 
   @override
-  void record(LocationFix fix, GpsReliability reliability) {
+  void record(LocationFix fix, GpsReliability reliability, [Heading? heading]) {
     final file = _file;
     if (file == null) return;
     _append(
@@ -47,12 +61,25 @@ class CsvTrackRecorder implements TrackRecorder {
         fix.longitude.toStringAsFixed(6),
         fix.accuracyM.toStringAsFixed(1),
         reliability.name,
+        fix.speedMps?.toStringAsFixed(2) ?? '',
+        heading?.degrees.toStringAsFixed(0) ?? '',
+        heading?.source.name ?? '',
+        heading == null ? '' : (heading.needsCalibration ? 'si' : 'no'),
       ].join(','),
     );
   }
 
   @override
   Future<void> end() async => _file = null;
+
+  bool _hasCurrentHeader(File file) {
+    try {
+      final lines = file.readAsLinesSync();
+      return lines.isNotEmpty && lines.first == gpsTrackHeader;
+    } catch (_) {
+      return true;
+    }
+  }
 
   void _append(File file, String line) {
     try {

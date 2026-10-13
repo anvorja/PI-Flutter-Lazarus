@@ -11,6 +11,8 @@ class LocationFix {
     required this.longitude,
     required this.accuracyM,
     required this.at,
+    this.speedMps,
+    this.courseDeg,
   });
 
   final double latitude;
@@ -19,6 +21,11 @@ class LocationFix {
   /// Radio de incertidumbre reportado por el sistema (68 %), en metros.
   final double accuracyM;
   final DateTime at;
+
+  /// Velocidad en m/s y rumbo de marcha (0 = norte), si el GPS los da. El rumbo
+  /// solo sirve en movimiento (HU-016).
+  final double? speedMps;
+  final double? courseDeg;
 }
 
 /// Si se puede creer en la posición.

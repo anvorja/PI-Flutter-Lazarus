@@ -51,6 +51,7 @@ void main() {
         networkStatusRepositoryProvider.overrideWithValue(FakeNetworkStatus()),
         mediaRepositoryProvider.overrideWithValue(media),
         backgroundSessionRepositoryProvider.overrideWithValue(background),
+        compassRepositoryProvider.overrideWithValue(FakeCompassRepository()),
         locationRepositoryProvider.overrideWithValue(FakeLocationRepository()),
         trackRecorderProvider.overrideWithValue(FakeTrackRecorder()),
         announcerProvider.overrideWithValue((m, _) => spoken.add(m)),

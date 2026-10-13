@@ -61,6 +61,7 @@ void main() {
         backgroundSessionRepositoryProvider.overrideWithValue(
           FakeBackgroundSession(),
         ),
+        compassRepositoryProvider.overrideWithValue(FakeCompassRepository()),
         locationRepositoryProvider.overrideWithValue(FakeLocationRepository()),
         trackRecorderProvider.overrideWithValue(FakeTrackRecorder()),
         emergencyRepositoryProvider.overrideWithValue(emergency),
