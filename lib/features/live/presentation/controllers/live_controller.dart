@@ -146,6 +146,30 @@ bool? asksDescriptions(String text) {
   return null;
 }
 
+/// Salir del modo reunión (normalizado). Solo cuenta si además lo llaman por
+/// su nombre: "ya puedes hablar" puede ir dirigido a otra persona.
+const Set<String> leaveMeetingPhrases = {
+  'puedes hablar', // es; también "ya puedes hablar"
+  'salimos de la reunion',
+  'termino la reunion',
+  'se acabo la reunion',
+  'sal del modo reunion',
+  'you can talk',
+  'you can speak',
+  'meeting is over',
+  'tu peux parler',
+  'pode falar', // pt; también "já pode falar"
+  'puoi parlare',
+};
+
+/// Si la persona pidió salir del modo reunión en [text].
+bool asksLeaveMeeting(String text) {
+  final words = normalizeForMatch(
+    text,
+  ).replaceAll(RegExp(r'[^a-z]+'), ' ').trim();
+  return leaveMeetingPhrases.any(words.contains);
+}
+
 /// Reintentos automáticos cuando no se puede conectar con el backend.
 const int maxConnectionRetries = 3;
 
@@ -182,6 +206,10 @@ enum LiveNotice {
   sosCancelled,
   sosUnconfirmed,
   sosNoContact,
+
+  /// Entró al modo reunión (LAZA-113): lo dice el teléfono, porque la
+  /// confirmación del asistente no siempre se alcanza a oír.
+  meetingOn,
 }
 
 /// Avisos informativos que la persona puede silenciar por voz (`set_system_cues`).
@@ -228,6 +256,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Envié la alerta, pero la red no confirmó que llegó. Si puedes, llama a tu contacto o al 123.',
     LiveNotice.sosNoContact:
         'No tienes contacto de emergencia. Abro el marcador con el 123: el botón de llamar está abajo, en el centro de la pantalla.',
+    LiveNotice.meetingOn:
+        'Modo reunión. Te escucho en silencio; para hablarme, llámame por mi nombre.',
   },
   'en': {
     LiveNotice.retrying: 'I lost the connection to the server. Retrying.',
@@ -265,6 +295,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'I sent the alert, but the network did not confirm it arrived. If you can, call your contact or 123.',
     LiveNotice.sosNoContact:
         'You have no emergency contact. I am opening the dialer with 123: the call button is at the bottom center of the screen.',
+    LiveNotice.meetingOn:
+        'Meeting mode. I am listening quietly; to talk to me, call me by my name.',
   },
   'fr': {
     LiveNotice.retrying: 'J\'ai perdu la connexion au serveur. Nouvel essai.',
@@ -302,6 +334,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'J\'ai envoyé l\'alerte, mais le réseau n\'a pas confirmé qu\'elle est arrivée. Si tu peux, appelle ton contact ou le 123.',
     LiveNotice.sosNoContact:
         'Tu n\'as pas de contact d\'urgence. J\'ouvre le clavier avec le 123 : le bouton d\'appel est en bas, au centre de l\'écran.',
+    LiveNotice.meetingOn:
+        'Mode réunion. Je t\'écoute en silence ; pour me parler, appelle-moi par mon nom.',
   },
   'pt': {
     LiveNotice.retrying: 'Perdi a conexão com o servidor. Tentando de novo.',
@@ -339,6 +373,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Enviei o alerta, mas a rede não confirmou que chegou. Se puder, ligue para o seu contato ou para o 123.',
     LiveNotice.sosNoContact:
         'Você não tem contato de emergência. Vou abrir o discador com o 123: o botão de ligar fica embaixo, no centro da tela.',
+    LiveNotice.meetingOn:
+        'Modo reunião. Estou ouvindo em silêncio; para falar comigo, me chame pelo nome.',
   },
   'it': {
     LiveNotice.retrying: 'Ho perso la connessione al server. Riprovo.',
@@ -376,6 +412,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Ho inviato l\'avviso, ma la rete non ha confermato che sia arrivato. Se puoi, chiama il tuo contatto o il 123.',
     LiveNotice.sosNoContact:
         'Non hai un contatto di emergenza. Apro il tastierino con il 123: il pulsante di chiamata è in basso, al centro dello schermo.',
+    LiveNotice.meetingOn:
+        'Modalità riunione. Ascolto in silenzio; per parlarmi, chiamami per nome.',
   },
 };
 
@@ -524,6 +562,14 @@ class LiveController extends Notifier<LiveUiState> {
   final List<String> _heldAudio = [];
   bool _turnAllowed = false; // este turno puede sonar aunque sea modo reunión
 
+  /// Turno en que el asistente entró al modo reunión: su "Entendido" no suena
+  /// (aunque lo hayan llamado por su nombre), porque lo confirma el teléfono.
+  bool _meetingConfirmTurn = false;
+
+  /// La persona pidió salir del modo reunión llamándolo por su nombre: si el
+  /// asistente no llama a `set_meeting_mode`, la app sale igual (LAZA-113).
+  bool _leaveMeetingRequested = false;
+
   /// La persona pidió "silencio total": si el asistente no llama a
   /// `set_microphone`, la app lo aplica igual al terminar su turno (privacidad).
   bool _silenceRequested = false;
@@ -598,6 +644,8 @@ class LiveController extends Notifier<LiveUiState> {
     _cameraPaused = false;
     _heldAudio.clear();
     _turnAllowed = false;
+    _meetingConfirmTurn = false;
+    _leaveMeetingRequested = false;
     // Lo que alcanzó a decir en esta sesión se registra aquí: si no, se pegaría
     // al primer turno de la sesión siguiente.
     _logAssistantSaid(' (cortado al cerrar la sesión)');
@@ -1146,7 +1194,9 @@ class LiveController extends Notifier<LiveUiState> {
       _switchCameraSession();
     } else if (_session.connected) {
       // Sesión aún viva: reanuda el envío y pide confirmación, sin reconectar.
+      // La confirmación suena aunque siga en modo reunión (LAZA-113).
       _expectReply();
+      _allowTurn('reactivado con un toque');
       _session.sendMicResumed();
     } else {
       // La sesión se cerró durante el silencio (el backend la cierra por
@@ -1221,13 +1271,24 @@ class LiveController extends Notifier<LiveUiState> {
         if (asksTotalSilence(_recentHeard())) _silenceRequested = true;
         final describing = asksDescriptions(_recentHeard());
         if (describing != null) _describingRequested = describing;
-        if (_heldAudio.isNotEmpty && _calledByName()) {
+        if (state.meetingMode &&
+            _calledByName() &&
+            asksLeaveMeeting(_recentHeard())) {
+          _leaveMeetingRequested = true;
+        }
+        if (_heldAudio.isNotEmpty && !_meetingConfirmTurn && _calledByName()) {
           _allowTurn('lo llamaron por su nombre');
         }
       case LiveResponseType.outputTranscription:
         final t = message.data as LiveTranscription;
         _assistantSaid.write(t.text);
-        state = state.copyWith(assistantTranscript: _assistantSaid.toString());
+        // En modo reunión, lo que no va a sonar tampoco se muestra: la persona
+        // que mira la pantalla creería que lo dijo en voz alta (LAZA-113).
+        state = state.copyWith(
+          assistantTranscript: state.meetingMode && !_turnAllowed
+              ? ''
+              : _assistantSaid.toString(),
+        );
       case LiveResponseType.toolCall:
         _markActivity();
         final call = message.data as LiveToolCall;
@@ -1240,7 +1301,7 @@ class LiveController extends Notifier<LiveUiState> {
         // Modo reunión: calla salvo que lo llamen por su nombre. El audio se
         // retiene hasta saberlo (la transcripción puede llegar después).
         if (state.meetingMode && !_turnAllowed) {
-          if (_calledByName()) {
+          if (!_meetingConfirmTurn && _calledByName()) {
             _allowTurn('lo llamaron por su nombre');
           } else {
             if (_heldAudio.isEmpty) {
@@ -1275,6 +1336,7 @@ class LiveController extends Notifier<LiveUiState> {
         );
         _applyRequestedSilence();
         _applyRequestedDescriptions();
+        _applyRequestedMeetingExit();
         // El asistente terminó de generar; el audio aún puede estar drenando.
         // El mic se reabrirá cuando la cola se vacíe (onDrained). Si el
         // drenado llegó primero (respuesta corta), reabre ya mismo.
@@ -1484,6 +1546,21 @@ class LiveController extends Notifier<LiveUiState> {
     state = state.copyWith(micMuted: true);
   }
 
+  /// Red de seguridad de "Aria, ya puedes hablar": el asistente respondió sin
+  /// llamar a `set_meeting_mode`, así que la app sale del modo reunión igual
+  /// (en la prueba de LAZA-113 dijo "Entendido" y siguió callado).
+  void _applyRequestedMeetingExit() {
+    if (!_leaveMeetingRequested) return;
+    _leaveMeetingRequested = false;
+    if (!state.meetingMode) return;
+    _heard.clear();
+    _log(
+      '[Lazarus] modo reunión desactivado por la app (el asistente no llamó a set_meeting_mode)',
+    );
+    state = state.copyWith(meetingMode: false);
+    _whenAssistantFinishes(_syncCameraSession);
+  }
+
   /// Red de seguridad de "deja de describir" / "vuelve a describir": el
   /// asistente respondió sin llamar a `set_descriptions`, así que la app guarda
   /// el ajuste igual (persiste para la próxima sesión).
@@ -1503,6 +1580,7 @@ class LiveController extends Notifier<LiveUiState> {
     if (_turnAllowed) return;
     _turnAllowed = true;
     _log('[Lazarus] modo reunión: responde ($reason)');
+    state = state.copyWith(assistantTranscript: _assistantSaid.toString());
     _releaseHeldAudio();
   }
 
@@ -1524,6 +1602,7 @@ class LiveController extends Notifier<LiveUiState> {
     }
     _heldAudio.clear();
     _turnAllowed = false;
+    _meetingConfirmTurn = false;
     return discarded;
   }
 
@@ -1664,6 +1743,7 @@ class LiveController extends Notifier<LiveUiState> {
           _settings.setSystemCuesMuted(call.args['enabled'] != true);
         case 'set_meeting_mode':
           meetingMode = call.args['enabled'] == true;
+          _leaveMeetingRequested = false;
         case 'set_microphone':
           micActive = call.args['active'] != false;
           _silenceRequested = false;
@@ -1721,8 +1801,23 @@ class LiveController extends Notifier<LiveUiState> {
         micMuted: micActive != null ? !micActive : null,
       );
     }
-    // La confirmación de entrar o salir del modo reunión sí debe sonar.
-    if (meetingMode != null) _allowTurn('entra o sale del modo reunión');
+    // Al entrar, la confirmación la dice el teléfono y el "Entendido" del
+    // asistente se descarta: no siempre se alcanzaba a oír y la persona no
+    // sabía si había entrado (LAZA-113). Al salir, el asistente sí suena.
+    if (meetingMode == true) {
+      _meetingConfirmTurn = true;
+      if (_assistantActive) {
+        _whenAssistantFinishes(() => _announce(LiveNotice.meetingOn));
+      } else {
+        _turnAllowed = false;
+        _announce(LiveNotice.meetingOn);
+      }
+    } else if (meetingMode == false) {
+      _allowTurn('sale del modo reunión');
+    }
+    // También la del silencio total: sin ella, la persona no sabe si el
+    // micrófono quedó apagado (LAZA-113).
+    if (micActive != null) _allowTurn('silencio total');
     // Si la pantalla cambió durante la reunión, la sesión se ajusta al salir.
     if (meetingMode == false) _whenAssistantFinishes(_syncCameraSession);
 

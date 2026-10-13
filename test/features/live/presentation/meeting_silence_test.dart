@@ -18,6 +18,7 @@ void main() {
   late FakeLiveSessionRepository session;
   late FakeMediaRepository media;
   late List<String> logs;
+  late List<String> announced; // lo que dijo la voz del teléfono
   late ProviderContainer container;
 
   LiveUiState state() => container.read(liveControllerProvider);
@@ -57,6 +58,7 @@ void main() {
     session = FakeLiveSessionRepository();
     media = FakeMediaRepository();
     logs = [];
+    announced = [];
     final original = debugPrint;
     debugPrint = (message, {wrapWidth}) => logs.add(message ?? '');
     addTearDown(() => debugPrint = original);
@@ -71,7 +73,7 @@ void main() {
         ),
         locationRepositoryProvider.overrideWithValue(FakeLocationRepository()),
         trackRecorderProvider.overrideWithValue(FakeTrackRecorder()),
-        announcerProvider.overrideWithValue((_, _) {}),
+        announcerProvider.overrideWithValue((m, _) => announced.add(m)),
         announcerStopProvider.overrideWithValue(() {}),
         retryDelayProvider.overrideWithValue((_) => Duration.zero),
       ],
@@ -97,9 +99,59 @@ void main() {
       media.played.clear();
     });
 
-    test('la confirmación de entrar en el modo suena', () {
+    test('al entrar lo confirma la voz del teléfono, no el asistente '
+        '(LAZA-113)', () {
       expect(state().meetingMode, isTrue);
-      expect(playedOnEnter, ['entendido']);
+      expect(playedOnEnter, isEmpty);
+      expect(announced, [noticeText(LiveNotice.meetingOn, 'es')]);
+    });
+
+    test('lo que no suena tampoco se muestra en pantalla (LAZA-113)', () async {
+      await heard('¿Qué hora es?');
+      emit(
+        LiveResponseType.outputTranscription,
+        LiveTranscription(text: 'Son las cinco.', finished: false),
+      );
+      await assistantSays('la-hora');
+      emit(LiveResponseType.turnComplete);
+      await settle();
+      expect(media.played, isEmpty);
+      expect(state().assistantTranscript, isEmpty);
+
+      // Si lo llaman por su nombre, la respuesta suena y se muestra.
+      await heard('Aria, ¿qué hora es?');
+      emit(
+        LiveResponseType.outputTranscription,
+        LiveTranscription(text: 'Son las cinco.', finished: false),
+      );
+      await assistantSays('la-hora');
+      expect(media.played, ['la-hora']);
+      expect(state().assistantTranscript, 'Son las cinco.');
+    });
+
+    test('"Aria, ya puedes hablar" sin la función: la app sale del modo '
+        '(LAZA-113)', () async {
+      await heard('Aria, ya puedes hablar.');
+      await assistantSays('entendido');
+      emit(LiveResponseType.turnComplete);
+      await settle();
+      expect(media.played, ['entendido']);
+      expect(state().meetingMode, isFalse);
+      expect(
+        logs,
+        contains(
+          '[Lazarus] modo reunión desactivado por la app (el asistente no llamó a set_meeting_mode)',
+        ),
+      );
+    });
+
+    test('"ya puedes hablar" sin su nombre no sale del modo', () async {
+      await heard('Ya puedes hablar, Juan.');
+      await assistantSays('respuesta-no-pedida');
+      emit(LiveResponseType.turnComplete);
+      await settle();
+      expect(state().meetingMode, isTrue);
+      expect(media.played, isEmpty);
     });
 
     test('si nadie lo llama por su nombre, no produce audio', () async {
@@ -159,6 +211,32 @@ void main() {
       controller().disconnect();
       expect(state().meetingMode, isFalse);
     });
+  });
+
+  test('al entrar, el "Entendido" no suena aunque lo llamen por su nombre: '
+      'lo dice el teléfono', () async {
+    await heard('Aria, estoy en una reunión.');
+    await toolCall('set_meeting_mode', {'enabled': true});
+    await assistantSays('entendido');
+    emit(LiveResponseType.turnComplete);
+    await settle();
+    expect(media.played, isEmpty);
+    expect(announced, [noticeText(LiveNotice.meetingOn, 'es')]);
+
+    // Pasada la confirmación, lo llaman y responde.
+    await heard('Aria, ¿qué se dijo?');
+    await assistantSays('resumen');
+    expect(media.played, ['resumen']);
+  });
+
+  test('reconoce cómo salir del modo reunión en los idiomas de la app', () {
+    expect(asksLeaveMeeting('Aria, ya puedes hablar.'), isTrue);
+    expect(asksLeaveMeeting('Aria, salimos de la reunión'), isTrue);
+    expect(asksLeaveMeeting('Aria, you can talk now'), isTrue);
+    expect(asksLeaveMeeting('Aria, tu peux parler'), isTrue);
+    expect(asksLeaveMeeting('Aria, já pode falar'), isTrue);
+    expect(asksLeaveMeeting('Aria, puoi parlare'), isTrue);
+    expect(asksLeaveMeeting('Aria, ¿qué se dijo?'), isFalse);
   });
 
   group('reconocer el nombre en la transcripción', () {
@@ -321,5 +399,65 @@ void main() {
         expect(session.micResumed, 0);
       },
     );
+  });
+
+  group('silencio total en modo reunión (LAZA-113)', () {
+    setUp(() async {
+      await heard('Estoy en una reunión, escucha pero no hables.');
+      await toolCall('set_meeting_mode', {'enabled': true});
+      await assistantSays('entendido');
+      emit(LiveResponseType.turnComplete);
+      await settle();
+      media.played.clear();
+    });
+
+    test('la confirmación del silencio total suena sin llamarlo por su '
+        'nombre', () async {
+      await heard('Silencio total.');
+      await assistantSays('toca-para-reactivar'); // antes de la función
+      expect(media.played, isEmpty);
+      await toolCall('set_microphone', {'active': false});
+      expect(state().micMuted, isTrue);
+      expect(media.played, ['toca-para-reactivar']);
+    });
+
+    test('al reactivar con un toque, "te escucho de nuevo" suena', () async {
+      await toolCall('set_microphone', {'active': false});
+      await assistantSays('toca-para-reactivar');
+      emit(LiveResponseType.turnComplete);
+      await settle();
+      media.played.clear();
+
+      controller().onTap();
+      await settle();
+      expect(state().meetingMode, isTrue);
+      await assistantSays('te-escucho');
+      expect(media.played, ['te-escucho']);
+      emit(LiveResponseType.turnComplete);
+      await settle();
+
+      // Pasada la confirmación, vuelve a callar si no lo llaman.
+      await heard('Sigamos con el acta.');
+      await assistantSays('respuesta-no-pedida');
+      expect(media.played, ['te-escucho']);
+    });
+
+    test('si la sesión se cerró durante el silencio, la sesión nueva sale '
+        'del modo reunión y su confirmación suena', () async {
+      await toolCall('set_microphone', {'active': false});
+      emit(LiveResponseType.turnComplete);
+      await settle();
+      session.emitClose(LiveCloseCause.upstreamEnded);
+      await settle();
+      media.played.clear();
+
+      controller().onTap();
+      await settle();
+      session.emitSetupComplete();
+      await settle();
+      expect(state().meetingMode, isFalse);
+      await assistantSays('te-escucho');
+      expect(media.played, ['te-escucho']);
+    });
   });
 }
