@@ -26,6 +26,8 @@ import '../../../emergency/presentation/providers/emergency_providers.dart';
 import '../../../field_notes/domain/entities/field_note.dart';
 import '../../../field_notes/presentation/providers/field_notes_providers.dart';
 import '../../../location/presentation/providers/location_providers.dart';
+import '../../../routes/domain/unicentro_schedule.dart';
+import '../../../routes/presentation/providers/routes_providers.dart';
 import '../providers/live_providers.dart';
 import '../../../../core/debug/live_debug.dart';
 import '../../../../core/telemetry/session_telemetry.dart';
@@ -56,6 +58,12 @@ const String restartResult =
 /// Modo reunión: cuánto tiempo atrás se busca el nombre del asistente en lo que
 /// se oyó para dejarlo responder.
 const Duration meetingNameWindow = Duration(seconds: 10);
+
+/// "Ya pasó el tropel" (HU-019, regla 6): el segundo pedido debe llegar dentro
+/// de este plazo, y no antes de [disturbanceLiftMinGap] (el asistente no puede
+/// confirmar por su cuenta en el mismo turno).
+const Duration disturbanceLiftWindow = Duration(minutes: 3);
+const Duration disturbanceLiftMinGap = Duration(seconds: 4);
 
 /// Minúsculas y sin tildes, para comparar nombres en la transcripción.
 String normalizeForMatch(String text) {
@@ -592,6 +600,18 @@ class LiveController extends Notifier<LiveUiState> {
   /// asistente no llama a `set_meeting_mode`, la app sale igual (LAZA-113).
   bool _leaveMeetingRequested = false;
 
+  /// La persona consultó la Ruta A y estaba disponible: si se desactiva antes
+  /// de Detener, la app se lo avisa sin que pregunte (HU-019, regla 3).
+  bool _routeAOffered = false;
+  Timer? _routeAWatch;
+
+  /// "Ya pasó el tropel" se pide dos veces: el primer pedido queda aquí y solo
+  /// un segundo pedido, con la persona hablando de nuevo, levanta la regla 6.
+  ({DateTime at, int heard})? _disturbanceLiftRequest;
+
+  /// Transcripciones de la persona en esta sesión (para la doble confirmación).
+  int _heardCount = 0;
+
   /// Notas de campo dictadas desde el último Detener (HU-024).
   int _notesThisSession = 0;
 
@@ -663,6 +683,8 @@ class LiveController extends Notifier<LiveUiState> {
   }
 
   void _teardown() {
+    _routeAWatch?.cancel();
+    _routeAWatch = null;
     _cameraSwitch?.cancel();
     _cameraSwitch = null;
     _stopObserving();
@@ -1181,6 +1203,8 @@ class LiveController extends Notifier<LiveUiState> {
     _teardown();
     _stopBackground();
     _endTelemetry('stopped');
+    _routeAOffered = false;
+    _disturbanceLiftRequest = null;
     if (_notesThisSession > 0) {
       final notas = _notesThisSession == 1 ? 'nota' : 'notas';
       _log('[Lazarus] bitácora: $_notesThisSession $notas en esta sesión');
@@ -1252,6 +1276,11 @@ class LiveController extends Notifier<LiveUiState> {
         });
         _retryAttempts = 0;
         _everConnected = true;
+        _routeAWatch?.cancel();
+        _routeAWatch = Timer.periodic(
+          const Duration(seconds: 30),
+          (_) => checkRouteA(),
+        );
         switch (_pendingKickoff) {
           case _PendingKickoff.voice:
             _expectReply();
@@ -1281,6 +1310,7 @@ class LiveController extends Notifier<LiveUiState> {
         final t = message.data as LiveTranscription;
         _log('[Lazarus] te escuché (transcripción): "${t.text}"');
         state = state.copyWith(userTranscript: t.text);
+        _heardCount++;
         _remember(t.text);
         // La persona habla: el ciclo de observación espera su respuesta. La
         // transcripción respalda al nivel del micrófono, que no capta una voz
@@ -1576,6 +1606,88 @@ class LiveController extends Notifier<LiveUiState> {
     state = state.copyWith(micMuted: true);
   }
 
+  RouteAStatus _routeAStatus() {
+    final wall = bogotaWallClock(ref.read(liveClockProvider)());
+    return ref
+        .read(unicentroScheduleProvider)
+        .status(
+          wall,
+          disturbance: ref.read(disturbanceStoreProvider).isActive(wall),
+        );
+  }
+
+  /// "Hay tropel en la universidad": la Ruta A queda inhabilitada el resto
+  /// del día, a cualquier hora (regla 6). "Ya pasó el tropel" la levanta solo
+  /// si la persona lo confirma: la primera vez la app pide confirmación y la
+  /// segunda, ya con una nueva respuesta de la persona, la levanta.
+  Future<String> _setDisturbance(bool active) async {
+    final now = ref.read(liveClockProvider)();
+    final wall = bogotaWallClock(now);
+    final store = ref.read(disturbanceStoreProvider);
+    if (active) {
+      _disturbanceLiftRequest = null;
+      await store.set(active: true, wall: wall);
+      // La persona ya lo sabe: no hace falta el aviso de la regla 3.
+      _routeAOffered = false;
+      _log('[Lazarus] ruta A: disturbios reportados → inhabilitada hoy');
+      return 'ok: Route A (the exit to Pasoancho through Unicentro) is '
+          'disabled for the rest of today because of the disturbances. '
+          'Confirm it in one short sentence and tell them to look for an '
+          'alternate exit (Route B): the Calle 16 gate or the Carrera 86 gate.';
+    }
+    if (!store.isActive(wall)) {
+      _disturbanceLiftRequest = null;
+      return 'ok: there was no disturbance report today; the Unicentro '
+          'schedule applies. Answer in one short sentence.';
+    }
+    final request = _disturbanceLiftRequest;
+    if (request == null ||
+        now.difference(request.at) > disturbanceLiftWindow ||
+        _heardCount <= request.heard ||
+        now.difference(request.at) < disturbanceLiftMinGap) {
+      if (request == null ||
+          now.difference(request.at) > disturbanceLiftWindow) {
+        _disturbanceLiftRequest = (at: now, heard: _heardCount);
+      }
+      _log('[Lazarus] ruta A: levantar disturbios → se pide confirmación');
+      return 'pending: the disturbance report is still active and Route A '
+          'stays disabled. For safety it is lifted only if the person '
+          'confirms. Ask once, in one short sentence, whether they are sure '
+          'the disturbances are over. Only if the person answers yes or says '
+          'it again, call set_route_disturbance with active=false again; '
+          'otherwise keep it disabled.';
+    }
+    _disturbanceLiftRequest = null;
+    await store.set(active: false, wall: wall);
+    _log('[Lazarus] ruta A: reporte de disturbios levantado (confirmado)');
+    return 'ok: the disturbance report was removed; the Unicentro schedule '
+        'applies again. Confirm it in one short sentence.';
+  }
+
+  /// Respuesta de `get_unicentro_route`: la regla la decide la app con la hora
+  /// de Colombia, no el asistente (HU-019, regla 5).
+  String _describeRouteAForAssistant() {
+    final status = _routeAStatus();
+    _routeAOffered = status.available;
+    final result = describeRouteA(status);
+    _log('[Lazarus] ruta A (Unicentro): ${status.state.name} → $result');
+    return result;
+  }
+
+  /// Si la persona iba por la Ruta A y se desactivó, el asistente lo avisa
+  /// una sola vez y ofrece la ruta alterna (HU-019, regla 3).
+  @visibleForTesting
+  void checkRouteA() {
+    if (!_routeAOffered || !ref.mounted || !_session.connected) return;
+    final status = _routeAStatus();
+    if (status.available) return;
+    _routeAOffered = false;
+    final notice = describeRouteA(status);
+    _log('[Lazarus] ruta A desactivada durante la sesión → aviso: $notice');
+    _expectReply();
+    _session.sendRouteNotice(notice);
+  }
+
   /// Guarda una nota de campo con la hora y la última posición conocida, y
   /// devuelve la respuesta para el asistente (HU-024, criterio 3).
   Future<String> _addFieldNote(String raw) async {
@@ -1843,6 +1955,14 @@ class LiveController extends Notifier<LiveUiState> {
           waits.add(
             _addFieldNote(
               (call.args['text'] ?? '').toString(),
+            ).then((r) => results[call.id] = r),
+          );
+        case 'get_unicentro_route':
+          results[call.id] = _describeRouteAForAssistant();
+        case 'set_route_disturbance':
+          waits.add(
+            _setDisturbance(
+              call.args['active'] == true,
             ).then((r) => results[call.id] = r),
           );
         case 'get_time':

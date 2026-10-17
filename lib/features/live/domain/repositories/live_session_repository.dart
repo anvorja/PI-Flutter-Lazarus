@@ -58,6 +58,10 @@ abstract class LiveSessionRepository {
   /// resultado al asistente para que se lo diga a la persona.
   void sendSosResult(String result);
 
+  /// La Ruta A por Unicentro se desactivó durante la sesión (HU-019): le pasa
+  /// el hecho al asistente para que lo avise y ofrezca la ruta alterna.
+  void sendRouteNotice(String notice);
+
   /// Primer mensaje de una sesión abierta con la pantalla bloqueada (HU-017):
   /// el asistente avisa que sigue sin ver.
   void sendCameraPaused();

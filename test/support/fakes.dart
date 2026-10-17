@@ -120,6 +120,11 @@ class FakeLiveSessionRepository implements LiveSessionRepository {
   @override
   void sendSosResult(String result) => sosResults.add(result);
 
+  final List<String> routeNotices = [];
+
+  @override
+  void sendRouteNotice(String notice) => routeNotices.add(notice);
+
   /// Primeros mensajes de sesión sin cámara (`false`) y con cámara de vuelta
   /// (`true`), en orden.
   final List<bool> cameraNotices = [];
