@@ -9,8 +9,10 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.media.AudioPlaybackConfiguration
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -21,6 +23,7 @@ import android.telephony.SmsManager
 import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
@@ -41,6 +44,8 @@ class MainActivity : FlutterActivity() {
     private val emergencyChannelName = "lazarus/emergency"
     private val smsSentAction = "com.lazarus.app.SMS_SENT"
     private val sessionChannelName = "lazarus/session"
+    private val screenReaderSpeechChannelName = "lazarus/screen_reader_speech"
+    private var playbackCallback: AudioManager.AudioPlaybackCallback? = null
     private val batteryRequestCode = 17
     private var batteryResult: MethodChannel.Result? = null
     private var smsRequest = 0
@@ -80,6 +85,40 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
+        // TalkBack hablando (HU-023): en altavoz el micrófono capta su voz como si
+        // fuera la persona. Emite true/false cuando empieza o termina el audio de
+        // accesibilidad, para no enviar el micrófono mientras tanto.
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, screenReaderSpeechChannelName)
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, sink: EventChannel.EventSink) {
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+                    val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                    var last = accessibilitySpeaking(am.activePlaybackConfigurations)
+                    sink.success(last)
+                    val callback = object : AudioManager.AudioPlaybackCallback() {
+                        override fun onPlaybackConfigChanged(
+                            configs: MutableList<AudioPlaybackConfiguration>,
+                        ) {
+                            val now = accessibilitySpeaking(configs)
+                            if (now != last) {
+                                last = now
+                                sink.success(now)
+                            }
+                        }
+                    }
+                    playbackCallback?.let { am.unregisterAudioPlaybackCallback(it) }
+                    am.registerAudioPlaybackCallback(callback, Handler(Looper.getMainLooper()))
+                    playbackCallback = callback
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+                    val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                    playbackCallback?.let { am.unregisterAudioPlaybackCallback(it) }
+                    playbackCallback = null
+                }
+            })
+
         // Pantalla bloqueada (HU-017): servicio en primer plano y batería.
         val session = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, sessionChannelName)
         session.setMethodCallHandler { call, result ->
@@ -105,6 +144,23 @@ class MainActivity : FlutterActivity() {
                     ),
                 )
                 "requestBatteryExemption" -> requestBatteryExemption(result)
+                // Registro del teléfono en el panel del piloto (HU-044).
+                "deviceInfo" -> {
+                    val info = packageManager.getPackageInfo(packageName, 0)
+                    val build = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        info.longVersionCode
+                    } else {
+                        @Suppress("DEPRECATION")
+                        info.versionCode.toLong()
+                    }
+                    result.success(
+                        mapOf(
+                            "model" to Build.MODEL,
+                            "android" to Build.VERSION.RELEASE,
+                            "appVersion" to "${info.versionName}+$build",
+                        ),
+                    )
+                }
                 else -> result.notImplemented()
             }
         }
@@ -130,6 +186,11 @@ class MainActivity : FlutterActivity() {
      * Envía el SMS (en varias partes si es largo) y responde "sent" cuando el
      * sistema confirma todas, o "error:<código>" con la primera que falle.
      */
+    /// ¿Suena audio de accesibilidad (la voz de TalkBack)? Android entrega la
+    /// configuración de otras apps sin datos de quién es, pero con su uso.
+    private fun accessibilitySpeaking(configs: List<AudioPlaybackConfiguration>): Boolean =
+        configs.any { it.audioAttributes.usage == AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY }
+
     private fun sendSms(phone: String, text: String, result: MethodChannel.Result) {
         if (checkSelfPermission(Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
             result.success("error:sin permiso")

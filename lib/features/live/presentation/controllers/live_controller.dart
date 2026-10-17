@@ -20,6 +20,7 @@ import '../../domain/repositories/live_session_repository.dart';
 import '../../domain/repositories/live_settings_repository.dart';
 import '../../domain/repositories/media_repository.dart';
 import '../../domain/repositories/network_status_repository.dart';
+import '../../../access/presentation/providers/access_providers.dart';
 import '../../../emergency/domain/repositories/emergency_repository.dart';
 import '../../../emergency/presentation/controllers/sos_controller.dart';
 import '../../../emergency/presentation/providers/emergency_providers.dart';
@@ -64,6 +65,10 @@ const Duration meetingNameWindow = Duration(seconds: 10);
 /// confirmar por su cuenta en el mismo turno).
 const Duration disturbanceLiftWindow = Duration(minutes: 3);
 const Duration disturbanceLiftMinGap = Duration(seconds: 4);
+
+/// Tras terminar de hablar TalkBack, el micrófono sigue en pausa este tiempo
+/// (la cola de su voz en el altavoz).
+const Duration screenReaderSpeechTail = Duration(milliseconds: 300);
 
 /// Minúsculas y sin tildes, para comparar nombres en la transcripción.
 String normalizeForMatch(String text) {
@@ -124,6 +129,57 @@ bool asksTotalSilence(String text) {
   ).replaceAll(RegExp(r'[^a-z]+'), ' ').trim();
   return totalSilencePhrases.any(words.contains);
 }
+
+/// Quita las marcas internas de Gemini que a veces se cuelan en la
+/// transcripción (`<ctrl46>`, visto en la Fase 0) para no mostrarlas ni
+/// registrarlas como si las hubiera dicho.
+String withoutControlTokens(String text) =>
+    text.replaceAll(RegExp(r'<ctrl\d+>'), '');
+
+/// Transcripción con palabras de verdad: letras latinas, sin `<noise>`. Con
+/// ruido, la transcripción escribe cosas en tailandés, hindi o japonés.
+bool isSpokenWords(String text) =>
+    !text.contains('<noise>') &&
+    RegExp(r'[A-Za-zÁÉÍÓÚÜÑáéíóúüñÀ-ÿ]{2,}').hasMatch(text);
+
+/// Fin de la voz para la latencia: el último momento con voz en el micrófono,
+/// salvo que quede más de 1,5 s después de la última palabra transcrita (el
+/// ruido de la calle lo mantiene alto hasta que responde el asistente).
+DateTime endOfSpeech(DateTime? lastLoud, DateTime lastWord) {
+  if (lastLoud == null) return lastWord;
+  final limit = lastWord.add(const Duration(milliseconds: 1500));
+  return lastLoud.isAfter(limit) ? lastWord : lastLoud;
+}
+
+/// Pedido de nota de campo (HU-024) en lo que dijo la persona: el texto a
+/// anotar, sin "anota que…". Si "anota" va al final ("estoy en la estación,
+/// anota"), se toma lo anterior. `null` si no hay pedido o queda vacío.
+String? noteRequestText(String heard) {
+  const from = 'áàäâéèëêíìïîóòöôúùüûñ';
+  const to = 'aaaaeeeeiiiioooouuuun';
+  final lower = heard.toLowerCase();
+  final norm = StringBuffer();
+  for (final ch in lower.split('')) {
+    final i = from.indexOf(ch);
+    norm.write(i >= 0 ? to[i] : ch);
+  }
+  final match = RegExp(
+    r'\b(anota|anote|apunta|apunte|toma nota|note that|write down|annota|note)\b'
+    r'(\s+(que|de|that|che|of))?',
+  ).firstMatch(norm.toString());
+  if (match == null) return null;
+  String clean(String t) =>
+      t.replaceAll(RegExp(r'^[\s.,;:¿?¡!]+|[\s.,;:¿?¡!]+$'), '').trim();
+  final after = clean(heard.substring(match.end));
+  if (after.isNotEmpty) return after;
+  final before = clean(heard.substring(0, match.start));
+  return before.isEmpty ? null : before;
+}
+
+/// El asistente dijo que anotó ("Anotado.", "Noted.", "Noté.", "Annotato.").
+bool saysNoted(String said) => RegExp(
+  r'\b(anotad[oa]|apuntad[oa]|noted|note|annotato)\b',
+).hasMatch(normalizeForMatch(said));
 
 /// Pausar o reanudar las descripciones (normalizado). Incluye "escribir": en
 /// la prueba de CP-LAZA-107 la transcripción oyó "deja escribir" y "vuelve a
@@ -240,7 +296,27 @@ enum LiveNotice {
   /// Entró al modo reunión (LAZA-113): lo dice el teléfono, porque la
   /// confirmación del asistente no siempre se alcanza a oír.
   meetingOn,
+
+  /// El administrador puso Lazarus en pausa (fuera de las jornadas de campo).
+  servicePaused,
+
+  /// Control de acceso del piloto (HU-044).
+  devicePending,
+  deviceDisabled,
+  dailyLimit,
+  closedByAdmin,
+
+  /// Solo con TalkBack (HU-023): sin lector de pantalla la persona oye el
+  /// saludo del asistente y el silencio lo confirma el propio asistente.
+  connecting,
+  muted,
 }
+
+/// Avisos que solo lee TalkBack (HU-023): sin lector de pantalla no suenan.
+const Set<LiveNotice> screenReaderNotices = {
+  LiveNotice.connecting,
+  LiveNotice.muted,
+};
 
 /// Avisos informativos que la persona puede silenciar por voz (`set_system_cues`).
 /// Los demás explican cómo recuperarse de un error y suenan siempre.
@@ -288,6 +364,19 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'No tienes contacto de emergencia. Abro el marcador con el 123: el botón de llamar está abajo, en el centro de la pantalla.',
     LiveNotice.meetingOn:
         'Modo reunión. Te escucho en silencio; para hablarme, llámame por mi nombre.',
+    LiveNotice.servicePaused:
+        'Lazarus está en pausa por ahora. Quien coordina las pruebas lo activará de nuevo para la próxima jornada.',
+    LiveNotice.devicePending:
+        'Este teléfono está esperando la aprobación de quien coordina las pruebas. Avísale y vuelve a intentarlo.',
+    LiveNotice.deviceDisabled:
+        'Este teléfono no tiene acceso a Lazarus por ahora. Habla con quien coordina las pruebas.',
+    LiveNotice.dailyLimit:
+        'Se acabó el tiempo de uso de hoy en este teléfono. Mañana podrás usar Lazarus de nuevo.',
+    LiveNotice.closedByAdmin:
+        'Quien coordina las pruebas cerró la sesión. Toca la pantalla si necesitas volver a empezar.',
+    LiveNotice.connecting: 'Conectando con el asistente.',
+    LiveNotice.muted:
+        'Silencio total. Para reactivar el asistente, toca dos veces la pantalla.',
   },
   'en': {
     LiveNotice.retrying: 'I lost the connection to the server. Retrying.',
@@ -327,6 +416,19 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'You have no emergency contact. I am opening the dialer with 123: the call button is at the bottom center of the screen.',
     LiveNotice.meetingOn:
         'Meeting mode. I am listening quietly; to talk to me, call me by my name.',
+    LiveNotice.servicePaused:
+        'Lazarus is paused for now. The person coordinating the tests will turn it back on for the next session.',
+    LiveNotice.devicePending:
+        'This phone is waiting for approval from the person coordinating the tests. Let them know and try again.',
+    LiveNotice.deviceDisabled:
+        'This phone does not have access to Lazarus for now. Talk to the person coordinating the tests.',
+    LiveNotice.dailyLimit:
+        'Today\'s usage time on this phone is over. You can use Lazarus again tomorrow.',
+    LiveNotice.closedByAdmin:
+        'The person coordinating the tests closed the session. Tap the screen if you need to start again.',
+    LiveNotice.connecting: 'Connecting to the assistant.',
+    LiveNotice.muted:
+        'Total silence. To turn the assistant back on, double-tap the screen.',
   },
   'fr': {
     LiveNotice.retrying: 'J\'ai perdu la connexion au serveur. Nouvel essai.',
@@ -366,6 +468,19 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Tu n\'as pas de contact d\'urgence. J\'ouvre le clavier avec le 123 : le bouton d\'appel est en bas, au centre de l\'écran.',
     LiveNotice.meetingOn:
         'Mode réunion. Je t\'écoute en silence ; pour me parler, appelle-moi par mon nom.',
+    LiveNotice.servicePaused:
+        'Lazarus est en pause pour le moment. La personne qui coordonne les essais le réactivera pour la prochaine séance.',
+    LiveNotice.devicePending:
+        'Ce téléphone attend l\'approbation de la personne qui coordonne les essais. Préviens-la et réessaie.',
+    LiveNotice.deviceDisabled:
+        'Ce téléphone n\'a pas accès à Lazarus pour le moment. Parle à la personne qui coordonne les essais.',
+    LiveNotice.dailyLimit:
+        'Le temps d\'utilisation d\'aujourd\'hui est écoulé sur ce téléphone. Tu pourras utiliser Lazarus demain.',
+    LiveNotice.closedByAdmin:
+        'La personne qui coordonne les essais a fermé la session. Touche l\'écran si tu dois recommencer.',
+    LiveNotice.connecting: 'Connexion à l\'assistant.',
+    LiveNotice.muted:
+        'Silence total. Pour réactiver l\'assistant, touche deux fois l\'écran.',
   },
   'pt': {
     LiveNotice.retrying: 'Perdi a conexão com o servidor. Tentando de novo.',
@@ -405,6 +520,19 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Você não tem contato de emergência. Vou abrir o discador com o 123: o botão de ligar fica embaixo, no centro da tela.',
     LiveNotice.meetingOn:
         'Modo reunião. Estou ouvindo em silêncio; para falar comigo, me chame pelo nome.',
+    LiveNotice.servicePaused:
+        'O Lazarus está em pausa por enquanto. Quem coordena os testes vai ativá-lo de novo para a próxima jornada.',
+    LiveNotice.devicePending:
+        'Este telefone está esperando a aprovação de quem coordena os testes. Avise e tente de novo.',
+    LiveNotice.deviceDisabled:
+        'Este telefone não tem acesso ao Lazarus por enquanto. Fale com quem coordena os testes.',
+    LiveNotice.dailyLimit:
+        'O tempo de uso de hoje neste telefone acabou. Amanhã você poderá usar o Lazarus de novo.',
+    LiveNotice.closedByAdmin:
+        'Quem coordena os testes encerrou a sessão. Toque na tela se precisar começar de novo.',
+    LiveNotice.connecting: 'Conectando ao assistente.',
+    LiveNotice.muted:
+        'Silêncio total. Para reativar o assistente, toque duas vezes na tela.',
   },
   'it': {
     LiveNotice.retrying: 'Ho perso la connessione al server. Riprovo.',
@@ -444,8 +572,108 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Non hai un contatto di emergenza. Apro il tastierino con il 123: il pulsante di chiamata è in basso, al centro dello schermo.',
     LiveNotice.meetingOn:
         'Modalità riunione. Ascolto in silenzio; per parlarmi, chiamami per nome.',
+    LiveNotice.servicePaused:
+        'Lazarus è in pausa per ora. Chi coordina le prove lo riattiverà per la prossima sessione.',
+    LiveNotice.devicePending:
+        'Questo telefono aspetta l\'approvazione di chi coordina le prove. Avvisalo e riprova.',
+    LiveNotice.deviceDisabled:
+        'Questo telefono non ha accesso a Lazarus per ora. Parla con chi coordina le prove.',
+    LiveNotice.dailyLimit:
+        'Il tempo di utilizzo di oggi su questo telefono è finito. Domani potrai usare di nuovo Lazarus.',
+    LiveNotice.closedByAdmin:
+        'Chi coordina le prove ha chiuso la sessione. Tocca lo schermo se devi ricominciare.',
+    LiveNotice.connecting: 'Connessione all\'assistente.',
+    LiveNotice.muted:
+        'Silenzio totale. Per riattivare l\'assistente, tocca due volte lo schermo.',
   },
 };
+
+/// Con TalkBack un toque solo enfoca: los gestos de la app son tocar dos veces
+/// y tocar dos veces y mantener (HU-023). Cambia las instrucciones de los
+/// avisos a esos gestos, en el idioma de la persona.
+const Map<String, List<(String, String)>> _screenReaderGestures = {
+  'es': [
+    (r'([Tt])oca la pantalla', r'$1oca dos veces la pantalla'),
+    (
+      r'mantén presionada la pantalla tres segundos',
+      r'toca dos veces y mantén presionada la pantalla',
+    ),
+    (
+      r'vuelve a mantener presionada la pantalla',
+      r'vuelve a tocar dos veces y mantener presionada la pantalla',
+    ),
+    (r'toca una vez', r'toca dos veces'),
+  ],
+  'en': [
+    (r'(?<!-)\b([Tt])ap the screen', r'double-tap the screen'),
+    (
+      r'press and hold the screen for three seconds',
+      r'double-tap and hold the screen',
+    ),
+    (
+      r'press and hold the screen again',
+      r'double-tap and hold the screen again',
+    ),
+    (r'tap once', r'double-tap'),
+  ],
+  'fr': [
+    (r"([Tt])ouchez l'écran", r"$1ouchez deux fois l'écran"),
+    (r"([Tt])ouche l'écran", r"$1ouche deux fois l'écran"),
+    (
+      r"maintiens l'écran appuyé trois secondes",
+      r"touche deux fois l'écran et maintiens-le appuyé",
+    ),
+    (
+      r"maintiens de nouveau l'écran appuyé",
+      r"touche de nouveau deux fois l'écran et maintiens-le appuyé",
+    ),
+    (r'touche une fois', r'touche deux fois'),
+  ],
+  'pt': [
+    (r'([Tt])oque na tela', r'$1oque duas vezes na tela'),
+    (
+      r'mantenha a tela pressionada por três segundos',
+      r'toque duas vezes e mantenha a tela pressionada',
+    ),
+    (
+      r'mantenha a tela pressionada de novo',
+      r'toque duas vezes e mantenha a tela pressionada de novo',
+    ),
+    (r'toque uma vez', r'toque duas vezes'),
+  ],
+  'it': [
+    (r'([Tt])occa lo schermo', r'$1occa due volte lo schermo'),
+    (
+      r'tieni premuto lo schermo per tre secondi',
+      r'tocca due volte e tieni premuto lo schermo',
+    ),
+    (
+      r'tieni premuto di nuovo lo schermo',
+      r'tocca due volte e tieni premuto di nuovo lo schermo',
+    ),
+    (r'tocca una volta', r'tocca due volte'),
+  ],
+};
+
+/// [text] con los gestos de TalkBack en lugar de los táctiles.
+String withScreenReaderGestures(String text, String language) {
+  var out = text;
+  for (final (pattern, replacement)
+      in _screenReaderGestures[language] ?? _screenReaderGestures['es']!) {
+    out = out.replaceAllMapped(
+      RegExp(pattern),
+      (m) => replacement.replaceAllMapped(
+        RegExp(r'\$(\d)'),
+        (g) => m.group(int.parse(g.group(1)!)) ?? '',
+      ),
+    );
+  }
+  // "double-tap the screen" al inicio de frase.
+  return out.replaceAllMapped(
+    RegExp(r'(^|\. )double-tap'),
+    (m) => '${m.group(1)}Double-tap',
+  );
+}
 
 /// Texto del aviso en el idioma de la persona (español si no está disponible).
 /// [name] reemplaza `{name}` (el contacto de emergencia).
@@ -486,6 +714,42 @@ class LiveUiState {
 
   /// Modo B: silencio total, no se envía mic/cámara.
   final bool micMuted;
+
+  /// Lo que lee TalkBack sobre el área de la pantalla (HU-023): el estado, sin
+  /// las instrucciones de toque, que van en [tapHint] y [longPressHint].
+  String get screenReaderLabel {
+    if (micMuted) return 'Silencio total';
+    if (status == LiveStatus.connected && meetingMode) {
+      return 'Modo reunión: escuchando en silencio. Llámame por mi nombre.';
+    }
+    return switch (status) {
+      LiveStatus.idle => 'Iniciar asistente',
+      LiveStatus.connecting => 'Conectando',
+      LiveStatus.connected => 'Asistente escuchando',
+      LiveStatus.error => 'Error de conexión',
+      LiveStatus.offline => 'Sin datos móviles',
+      LiveStatus.sos => 'Alerta SOS pendiente',
+    };
+  }
+
+  /// Qué hace el doble toque de TalkBack ("Toca dos veces para…"), o `null`
+  /// si tocar no hace nada en este estado (no se ofrece la acción).
+  String? get tapHint {
+    if (micMuted) return 'reactivar el asistente';
+    return switch (status) {
+      LiveStatus.idle => 'iniciar el asistente',
+      LiveStatus.error => 'reintentar',
+      LiveStatus.sos => 'cancelar la alerta',
+      LiveStatus.connecting ||
+      LiveStatus.connected ||
+      LiveStatus.offline => null,
+    };
+  }
+
+  /// Qué hace tocar dos veces y mantener (el gesto SOS de HU-042).
+  String get longPressHint => status == LiveStatus.sos
+      ? 'enviar la alerta ya'
+      : 'enviar una alerta SOS';
 
   bool get isLive =>
       status == LiveStatus.connecting ||
@@ -605,6 +869,14 @@ class LiveController extends Notifier<LiveUiState> {
   bool _routeAOffered = false;
   Timer? _routeAWatch;
 
+  /// Ya se consultó si el panel pidió los logs en esta sesión (HU-045).
+  bool _uploadChecked = false;
+
+  /// TalkBack está hablando: en altavoz el micrófono no se envía (HU-023).
+  bool _screenReaderSpeaking = false;
+  StreamSubscription<bool>? _screenReaderSpeech;
+  Timer? _screenReaderTail;
+
   /// "Ya pasó el tropel" se pide dos veces: el primer pedido queda aquí y solo
   /// un segundo pedido, con la persona hablando de nuevo, levanta la regla 6.
   ({DateTime at, int heard})? _disturbanceLiftRequest;
@@ -618,6 +890,12 @@ class LiveController extends Notifier<LiveUiState> {
   /// La persona pidió "silencio total": si el asistente no llama a
   /// `set_microphone`, la app lo aplica igual al terminar su turno (privacidad).
   bool _silenceRequested = false;
+
+  /// Lo que dijo la persona desde la última respuesta del asistente, y si en
+  /// ese intercambio se llamó a `add_note`: si el asistente dice "Anotado." sin
+  /// llamarla, la nota la guarda la app (Fase 0: se perdieron 4 notas).
+  final StringBuffer _userTurnHeard = StringBuffer();
+  bool _noteCalled = false;
 
   /// La persona pidió pausar (`false`) o reanudar (`true`) las descripciones:
   /// si el asistente no llama a `set_descriptions`, la app lo guarda igual.
@@ -641,7 +919,12 @@ class LiveController extends Notifier<LiveUiState> {
   /// Latencia voz a voz (HU-015): última vez que el micrófono captó voz y si
   /// la persona habló después de la última respuesta del asistente.
   DateTime? _lastVoiceAt;
-  bool _voicePending = false;
+
+  /// Última palabra real transcrita de la persona y si hubo alguna desde la
+  /// última respuesta: en la calle el ruido mantiene alto el micrófono hasta
+  /// que responde el asistente y la latencia salía casi en 0 (Fase 0).
+  DateTime? _lastWordAt;
+  bool _wordSinceReply = false;
 
   /// Se espera una respuesta del asistente (a la voz de la persona, al saludo,
   /// a una función o a otro mensaje de la app) y aún no terminó: no se observa,
@@ -697,6 +980,11 @@ class LiveController extends Notifier<LiveUiState> {
     // al primer turno de la sesión siguiente.
     _logAssistantSaid(' (cortado al cerrar la sesión)');
     _drainFallback?.cancel();
+    _screenReaderSpeech?.cancel();
+    _screenReaderSpeech = null;
+    _screenReaderTail?.cancel();
+    _screenReaderTail = null;
+    _screenReaderSpeaking = false;
     _media.stopMic();
     _media.stopCamera();
     _media.destroyPlayer();
@@ -738,7 +1026,14 @@ class LiveController extends Notifier<LiveUiState> {
     unawaited(_startBackground());
     // La ubicación acompaña a la sesión; sin permiso la sesión sigue igual.
     unawaited(ref.read(locationControllerProvider.notifier).start());
+    // Registro en el panel del piloto (HU-044): la primera vez, en segundo
+    // plano; la sesión no lo espera y el token sirve desde la siguiente.
+    final deviceAccess = ref.read(deviceAccessRepositoryProvider);
+    if (deviceAccess.savedToken == null) unawaited(deviceAccess.token());
+    _uploadChecked = false;
     _openSession(state.language);
+    // Con TalkBack, el doble toque necesita respuesta mientras llega el saludo.
+    _announce(LiveNotice.connecting);
   }
 
   /// La primera vez, antes de empezar, pide excluir a Lazarus de la optimización
@@ -1033,6 +1328,8 @@ class LiveController extends Notifier<LiveUiState> {
       describing: _settings.getDescribing(),
       camera: _cameraAllowed,
       screenLocked: _sessionBlind,
+      screenReader: ref.read(screenReaderActiveProvider)(),
+      deviceToken: ref.read(deviceAccessRepositoryProvider).savedToken,
       onResponse: _handleResponse,
       onClose: (cause) {
         _log('[Lazarus] sesión cerrada: ${cause.name}');
@@ -1060,6 +1357,12 @@ class LiveController extends Notifier<LiveUiState> {
   void _announce(LiveNotice notice) {
     if (mutableNotices.contains(notice) && _settings.getSystemCuesMuted()) {
       _log('[Lazarus] aviso silenciado: ${notice.name}');
+      return;
+    }
+    if (screenReaderNotices.contains(notice)) {
+      ref.read(screenReaderAnnouncerProvider)(
+        noticeText(notice, state.language),
+      );
       return;
     }
     _log('[Lazarus] aviso: ${notice.name}');
@@ -1099,12 +1402,45 @@ class LiveController extends Notifier<LiveUiState> {
         // 8 reintentos seguidos con "Perdí la conexión").
         state = state.copyWith(status: LiveStatus.error);
         _announce(LiveNotice.billingExhausted);
+      case LiveCloseCause.servicePaused:
+        // No se reintenta: la pausa la levanta quien administra el servidor.
+        state = state.copyWith(status: LiveStatus.error);
+        _announce(LiveNotice.servicePaused);
+      case LiveCloseCause.devicePending:
+        state = state.copyWith(status: LiveStatus.error);
+        _announce(LiveNotice.devicePending);
+      case LiveCloseCause.deviceDisabled:
+        state = state.copyWith(status: LiveStatus.error);
+        _announce(LiveNotice.deviceDisabled);
+      case LiveCloseCause.dailyLimit:
+        state = state.copyWith(status: LiveStatus.error);
+        _announce(LiveNotice.dailyLimit);
+      case LiveCloseCause.closedByAdmin:
+        state = state.copyWith(status: LiveStatus.idle);
+        _announce(LiveNotice.closedByAdmin);
+        // Los logs de esa sesión quedan en el panel, como al tocar Detener.
+        unawaited(_uploadLogs('cerrada desde el panel'));
       case LiveCloseCause.protocolError:
         state = state.copyWith(status: LiveStatus.error);
         _announce(LiveNotice.connectionFailed);
       case LiveCloseCause.upstreamError:
       case LiveCloseCause.unknown:
-        _retryOrFail(lang);
+        // Sin código no se sabe la causa: el backend la recuerda (Fase 0: el
+        // saldo agotado y el cierre desde el panel llegaron como un corte sin
+        // código a través de Render).
+        _session
+            .lastFailureCause(
+              deviceToken: ref.read(deviceAccessRepositoryProvider).savedToken,
+            )
+            .then((known) {
+              if (!ref.mounted) return;
+              if (known != null) {
+                _log('[Lazarus] causa según el backend: ${known.name}');
+                _onSessionClosed(known, lang);
+                return;
+              }
+              _retryOrFail(lang);
+            });
     }
   }
 
@@ -1160,11 +1496,14 @@ class LiveController extends Notifier<LiveUiState> {
 
       _micChunks = 0;
       _audioInChunks = 0;
+      _listenScreenReaderSpeech();
       await _media.startMic((pcm) {
         // Silencio total (Modo B): no enviar nada hasta reactivar.
         if (state.micMuted) return;
         // En altavoz, no enviar mientras el asistente suena (anti-eco).
         if (_onSpeaker && _assistantActive) return;
+        // Ni mientras habla TalkBack: su voz no es la persona (HU-023).
+        if (_onSpeaker && _screenReaderSpeaking) return;
         _trackVoice(pcm);
         _micChunks++;
         if (_micChunks == 1) _log('[Lazarus] mic: primer chunk enviado');
@@ -1194,6 +1533,8 @@ class LiveController extends Notifier<LiveUiState> {
   /// Botón Detener: cierra la sesión, libera micrófono y cámara y avisa con una
   /// frase corta (sin reconectar).
   void disconnect() {
+    // Logs de campo al panel (HU-045): lo nuevo desde la última subida.
+    unawaited(_uploadLogs('al detener'));
     _offlineReminder?.cancel();
     _offlineReminder = null;
     if (_sosByGesture) {
@@ -1267,6 +1608,11 @@ class LiveController extends Notifier<LiveUiState> {
     switch (message.type) {
       case LiveResponseType.setupComplete:
         _log('[Lazarus] setupComplete → sesión lista, arrancando media');
+        // El panel pidió los logs de este teléfono (HU-045): se suben ya.
+        if (!_uploadChecked) {
+          _uploadChecked = true;
+          unawaited(_uploadLogsIfRequested());
+        }
         state = state.copyWith(status: LiveStatus.connected);
         _telemetry.event('session_start', {
           'language': state.language,
@@ -1317,18 +1663,16 @@ class LiveController extends Notifier<LiveUiState> {
         // baja (CP-LAZA-107: preguntas cortadas por [OBSERVA]).
         _observeSentAt = null;
         _expectReply();
-        // Respaldo de la latencia voz a voz cuando el micrófono no detectó la
-        // voz (habla baja): la transcripción llega poco después de la voz.
-        final heardAt = DateTime.now();
-        final voice = _lastVoiceAt;
-        if (voice == null ||
-            heardAt.difference(voice) > const Duration(milliseconds: 1500)) {
-          _lastVoiceAt = heardAt;
+        // Latencia voz a voz: cuenta solo una palabra real, no "<noise>" ni el
+        // ruido que la transcripción escribe en otros alfabetos.
+        if (isSpokenWords(t.text)) {
+          _lastWordAt = DateTime.now();
+          _wordSinceReply = true;
         }
-        _voicePending = true;
         // Está respondiendo a "¿Envío la alerta…?": la cuenta espera.
         ref.read(sosControllerProvider.notifier).personSpoke();
         if (asksTotalSilence(_recentHeard())) _silenceRequested = true;
+        _userTurnHeard.write(t.text);
         final describing = asksDescriptions(_recentHeard());
         if (describing != null) _describingRequested = describing;
         if (state.meetingMode &&
@@ -1341,7 +1685,11 @@ class LiveController extends Notifier<LiveUiState> {
         }
       case LiveResponseType.outputTranscription:
         final t = message.data as LiveTranscription;
-        _assistantSaid.write(t.text);
+        final clean = withoutControlTokens(t.text);
+        if (clean.length != t.text.length) {
+          _log('[Lazarus] transcripción del asistente con marcas internas');
+        }
+        _assistantSaid.write(clean);
         // En modo reunión, lo que no va a sonar tampoco se muestra: la persona
         // que mira la pantalla creería que lo dijo en voz alta (LAZA-113).
         state = state.copyWith(
@@ -1391,6 +1739,7 @@ class LiveController extends Notifier<LiveUiState> {
           );
         });
       case LiveResponseType.turnComplete:
+        _applyRequestedNote(_assistantSaid.toString());
         _logAssistantSaid(
           _endMeetingTurn() ? ' (descartado: modo reunión)' : '',
         );
@@ -1446,12 +1795,14 @@ class LiveController extends Notifier<LiveUiState> {
         final ms = DateTime.now().difference(sent).inMilliseconds;
         _log('[Lazarus] observa: respondió en $ms ms');
         _telemetry.event('observe', {'answered': true, 'ms': ms});
-      } else if (_voicePending && _lastVoiceAt != null) {
-        final ms = DateTime.now().difference(_lastVoiceAt!).inMilliseconds;
+      } else if (_wordSinceReply && _lastWordAt != null) {
+        final ms = DateTime.now()
+            .difference(endOfSpeech(_lastVoiceAt, _lastWordAt!))
+            .inMilliseconds;
         _log('[Lazarus] latencia voz a voz: $ms ms');
         _telemetry.voiceToVoice(ms);
       }
-      _voicePending = false;
+      _wordSinceReply = false;
       // Mientras habla, la persona no puede contestar a "¿Envío la alerta…?".
       ref.read(sosControllerProvider.notifier).assistantSpeaking();
     }
@@ -1482,7 +1833,6 @@ class LiveController extends Notifier<LiveUiState> {
     // prueba, el ruido al caminar frenó la observación hasta 15 s.
     if (++_loudChunks < 3) return;
     _lastVoiceAt = DateTime.now();
-    _voicePending = true;
     _expectReply();
   }
 
@@ -1503,7 +1853,8 @@ class LiveController extends Notifier<LiveUiState> {
       );
     }
     _lastVoiceAt = null;
-    _voicePending = false;
+    _lastWordAt = null;
+    _wordSinceReply = false;
   }
 
   void _startObserving() {
@@ -1595,6 +1946,25 @@ class LiveController extends Notifier<LiveUiState> {
 
   /// Red de seguridad del silencio total: el asistente dijo que se silenciaba
   /// pero no llamó a la función, así que la app deja de enviar igual.
+  /// Red de seguridad de las notas: el asistente dijo "Anotado." sin llamar a
+  /// `add_note`, así que la app guarda lo que pidió la persona.
+  void _applyRequestedNote(String said) {
+    // Turno sin respuesta hablada (p. ej. el de la función): la persona puede
+    // seguir hablando y la respuesta llega en el turno siguiente.
+    if (said.trim().isEmpty) return;
+    final heard = _userTurnHeard.toString();
+    final called = _noteCalled;
+    _userTurnHeard.clear();
+    _noteCalled = false;
+    if (called || !saysNoted(said)) return;
+    final text = noteRequestText(heard);
+    if (text == null) return;
+    _log(
+      '[Lazarus] nota guardada por la app (el asistente dijo "Anotado" sin llamar a add_note)',
+    );
+    unawaited(_addFieldNote(text));
+  }
+
   void _applyRequestedSilence() {
     if (!_silenceRequested) return;
     _silenceRequested = false;
@@ -1604,6 +1974,44 @@ class LiveController extends Notifier<LiveUiState> {
       '[Lazarus] silencio total aplicado por la app (el asistente no llamó a set_microphone)',
     );
     state = state.copyWith(micMuted: true);
+    _announce(LiveNotice.muted);
+  }
+
+  /// Sigue la voz de TalkBack mientras dura la sesión (HU-023).
+  void _listenScreenReaderSpeech() {
+    _screenReaderSpeech?.cancel();
+    _screenReaderSpeech = _media.screenReaderSpeech().listen((speaking) {
+      if (speaking) {
+        _screenReaderTail?.cancel();
+        _screenReaderTail = null;
+        if (!_screenReaderSpeaking && _onSpeaker) {
+          _log('[Lazarus] mic: en pausa mientras habla TalkBack');
+        }
+        _screenReaderSpeaking = true;
+        return;
+      }
+      _screenReaderTail?.cancel();
+      _screenReaderTail = Timer(screenReaderSpeechTail, () {
+        if (_screenReaderSpeaking && _onSpeaker) {
+          _log('[Lazarus] mic: TalkBack terminó → reabierto');
+        }
+        _screenReaderSpeaking = false;
+        _screenReaderTail = null;
+      });
+    });
+  }
+
+  Future<void> _uploadLogsIfRequested() async {
+    if (await ref.read(deviceAccessRepositoryProvider).uploadRequested()) {
+      await _uploadLogs('pedido desde el panel');
+    }
+  }
+
+  Future<void> _uploadLogs(String reason) async {
+    final files = await ref.read(deviceAccessRepositoryProvider).uploadLogs();
+    if (files > 0) {
+      _log('[Lazarus] logs subidos al panel ($reason): $files archivos');
+    }
   }
 
   RouteAStatus _routeAStatus() {
@@ -1706,6 +2114,7 @@ class LiveController extends Notifier<LiveUiState> {
             text: text,
             fix: fix,
             reliability: location.reliability,
+            heading: location.heading,
           ),
         );
     if (!saved) {
@@ -1802,6 +2211,9 @@ class LiveController extends Notifier<LiveUiState> {
   /// asistente, o pasado el tiempo de respaldo si no llega a sonar.
   void _whenAssistantFinishes(void Function() action) {
     _afterSpeech.add(action);
+    // La respuesta ya está sonando (llegó antes que la función): basta con
+    // que termine esta, sin esperar otra que quizá no llegue.
+    if (_assistantActive) _afterSpeechHeard = true;
     _afterSpeechFallback?.cancel();
     _afterSpeechFallback = Timer(
       ref.read(sosQuestionFallbackProvider),
@@ -1951,6 +2363,7 @@ class LiveController extends Notifier<LiveUiState> {
                 }),
           );
         case 'add_note':
+          _noteCalled = true;
           // "Anota que la rampa está bloqueada" (HU-024).
           waits.add(
             _addFieldNote(
@@ -2029,6 +2442,13 @@ class LiveController extends Notifier<LiveUiState> {
     // También la del silencio total: sin ella, la persona no sabe si el
     // micrófono quedó apagado (LAZA-113).
     if (micActive != null) _allowTurn('silencio total');
+    // Con TalkBack se anuncia el estado y cómo salir, después de la
+    // confirmación del asistente para no taparla (HU-023, criterio 2).
+    if (micActive == false) {
+      _whenAssistantFinishes(() {
+        if (state.micMuted) _announce(LiveNotice.muted);
+      });
+    }
     // Si la pantalla cambió durante la reunión, la sesión se ajusta al salir.
     if (meetingMode == false) _whenAssistantFinishes(_syncCameraSession);
 

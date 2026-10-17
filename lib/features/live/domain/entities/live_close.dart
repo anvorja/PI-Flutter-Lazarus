@@ -19,6 +19,17 @@ enum LiveCloseCause {
   /// reintentando, alguien tiene que recargarlo.
   billingExhausted,
 
+  /// Quien administra las pruebas puso el servicio en pausa (fuera de las
+  /// jornadas de campo, para no gastar saldo).
+  servicePaused,
+
+  /// Control de acceso del piloto (HU-044): el teléfono espera aprobación,
+  /// está deshabilitado, agotó sus minutos del día o el panel cerró la sesión.
+  devicePending,
+  deviceDisabled,
+  dailyLimit,
+  closedByAdmin,
+
   /// La app envió un primer frame inválido o tardó demasiado.
   protocolError,
 
@@ -33,6 +44,11 @@ LiveCloseCause liveCloseCauseFromCode(int? code) => switch (code) {
   4003 => LiveCloseCause.quotaExceeded,
   4004 => LiveCloseCause.serverMisconfigured,
   4005 => LiveCloseCause.billingExhausted,
+  4006 => LiveCloseCause.servicePaused,
+  4007 => LiveCloseCause.devicePending,
+  4008 => LiveCloseCause.deviceDisabled,
+  4009 => LiveCloseCause.dailyLimit,
+  4010 => LiveCloseCause.closedByAdmin,
   1008 => LiveCloseCause.protocolError,
   _ => LiveCloseCause.unknown,
 };

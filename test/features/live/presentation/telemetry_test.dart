@@ -75,6 +75,10 @@ void main() {
   test(
     'mide la latencia desde la voz de la persona hasta la respuesta',
     () async {
+      emit(
+        LiveResponseType.inputTranscription,
+        LiveTranscription(text: '¿Qué hay adelante?', finished: true),
+      );
       for (var i = 0; i < 3; i++) {
         media.onMicChunk!(pcm(loud: true)); // voz sostenida, no un golpe suelto
       }
@@ -113,6 +117,38 @@ void main() {
       expect(latency['ms'] as int, greaterThanOrEqualTo(70));
     },
   );
+
+  test('la transcripción de ruido no cuenta como palabra (Fase 0)', () async {
+    emit(
+      LiveResponseType.inputTranscription,
+      LiveTranscription(text: ' <noise>', finished: true),
+    );
+    emit(
+      LiveResponseType.inputTranscription,
+      LiveTranscription(text: ' เออ เออ', finished: true),
+    );
+    emit(LiveResponseType.audio, 'AAAA');
+    await settle();
+    expect(events.where((e) => e['event'] == 'latency'), isEmpty);
+  });
+
+  test('con ruido de calle hasta la respuesta, mide desde la última palabra '
+      '(Fase 0: la mediana salía en milisegundos)', () {
+    final word = DateTime(2026, 10, 17, 11, 54, 30);
+    // El micrófono siguió "oyendo voz" 4 s después: era el tráfico.
+    expect(endOfSpeech(word.add(const Duration(seconds: 4)), word), word);
+    // En silencio, el micrófono marca el fin real de la voz.
+    final loud = word.add(const Duration(milliseconds: 600));
+    expect(endOfSpeech(loud, word), loud);
+    expect(endOfSpeech(null, word), word);
+    expect(isSpokenWords(' Sigo derecho.'), isTrue);
+    expect(isSpokenWords(' देम देम'), isFalse);
+  });
+
+  test('las marcas internas de Gemini no se muestran (Fase 0)', () {
+    expect(withoutControlTokens('<ctrl46><ctrl46>'), '');
+    expect(withoutControlTokens('Anotado.<ctrl46>'), 'Anotado.');
+  });
 
   test('sin voz de la persona no hay latencia que medir', () async {
     media.onMicChunk!(pcm(loud: false));

@@ -3,6 +3,7 @@ library;
 
 import 'dart:async';
 
+import 'package:app/features/access/domain/repositories/device_access_repository.dart';
 import 'package:app/features/emergency/domain/entities/emergency_contact.dart';
 import 'package:app/features/emergency/domain/repositories/emergency_repository.dart';
 import 'package:app/features/live/domain/entities/live_close.dart';
@@ -21,9 +22,23 @@ import 'package:app/features/location/domain/repositories/location_repository.da
 import 'package:app/features/location/domain/repositories/track_recorder.dart';
 
 class FakeLiveSessionRepository implements LiveSessionRepository {
+  /// Lo que responde el backend en `/api/v1/live/status`.
+  LiveCloseCause? failureCause;
+
+  @override
+  Future<LiveCloseCause?> lastFailureCause({String? deviceToken}) async {
+    lastStatusToken = deviceToken;
+    return failureCause;
+  }
+
+  /// Token con el que la app preguntó la causa del cierre.
+  String? lastStatusToken;
+
   int connectCalls = 0;
   bool? lastCamera;
   bool? lastScreenLocked;
+  bool? lastScreenReader;
+  String? lastDeviceToken;
   final List<String> sentImages = [];
   int kickoffs = 0;
   int micResumed = 0;
@@ -54,6 +69,8 @@ class FakeLiveSessionRepository implements LiveSessionRepository {
     bool? describing,
     bool camera = true,
     bool screenLocked = false,
+    bool screenReader = false,
+    String? deviceToken,
     required void Function(LiveResponse message) onResponse,
     required void Function(LiveCloseCause cause) onClose,
     required void Function(Object error) onError,
@@ -67,6 +84,8 @@ class FakeLiveSessionRepository implements LiveSessionRepository {
     lastDescribing = describing;
     lastCamera = camera;
     lastScreenLocked = screenLocked;
+    lastScreenReader = screenReader;
+    lastDeviceToken = deviceToken;
     _connected = true;
     _onResponse = onResponse;
     _onClose = onClose;
@@ -179,6 +198,13 @@ class FakeMediaRepository implements MediaRepository {
 
   @override
   Future<bool> isHeadsetConnected() async => headset;
+
+  /// Voz de TalkBack simulada (HU-023).
+  final StreamController<bool> screenReaderSpeaking =
+      StreamController<bool>.broadcast();
+
+  @override
+  Stream<bool> screenReaderSpeech() => screenReaderSpeaking.stream;
 
   @override
   Future<void> startMic(void Function(String base64Pcm) onChunk) async {
@@ -405,4 +431,31 @@ class FakeNetworkStatus implements NetworkStatusRepository {
 
   @override
   Stream<bool> onlineChanges() => _changes.stream;
+}
+
+/// Acceso del teléfono al piloto (HU-044 y HU-045), sin red.
+class FakeDeviceAccess implements DeviceAccessRepository {
+  FakeDeviceAccess({
+    this.deviceToken = 'token-de-prueba',
+    this.requested = false,
+  });
+
+  String? deviceToken;
+  bool requested;
+  int uploads = 0;
+
+  @override
+  String? get savedToken => deviceToken;
+
+  @override
+  Future<String?> token() async => deviceToken;
+
+  @override
+  Future<bool> uploadRequested() async => requested;
+
+  @override
+  Future<int> uploadLogs() async {
+    uploads++;
+    return 1;
+  }
 }

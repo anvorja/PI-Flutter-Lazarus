@@ -1,4 +1,5 @@
 import 'package:app/features/live/domain/entities/live_message.dart';
+import 'package:app/features/live/presentation/controllers/live_controller.dart';
 import 'package:app/features/live/presentation/providers/live_providers.dart';
 import 'package:app/features/location/presentation/providers/location_providers.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -121,4 +122,45 @@ void main() {
       expect(micSends(), isTrue);
     },
   );
+
+  group('voz de TalkBack (HU-023)', () {
+    test('altavoz: el micrófono no se envía mientras habla TalkBack, y '
+        'vuelve poco después de que termina', () async {
+      await startSession();
+      expect(micSends(), isTrue);
+
+      media.screenReaderSpeaking.add(true);
+      await settle();
+      // "…mantén pulsado para enviar una alerta SOS" no llega al asistente.
+      expect(micSends(), isFalse);
+
+      media.screenReaderSpeaking.add(false);
+      await settle();
+      expect(micSends(), isFalse); // la cola de su voz en el altavoz
+      await Future<void>.delayed(
+        screenReaderSpeechTail + const Duration(milliseconds: 50),
+      );
+      expect(micSends(), isTrue);
+    });
+
+    test('si vuelve a hablar durante la cola, sigue en pausa', () async {
+      await startSession();
+      media.screenReaderSpeaking.add(true);
+      await settle();
+      media.screenReaderSpeaking.add(false);
+      await settle();
+      media.screenReaderSpeaking.add(true);
+      await Future<void>.delayed(
+        screenReaderSpeechTail + const Duration(milliseconds: 50),
+      );
+      expect(micSends(), isFalse);
+    });
+
+    test('con audífonos su voz no llega al micrófono: no se pausa', () async {
+      await startSession(headset: true);
+      media.screenReaderSpeaking.add(true);
+      await settle();
+      expect(micSends(), isTrue);
+    });
+  });
 }
