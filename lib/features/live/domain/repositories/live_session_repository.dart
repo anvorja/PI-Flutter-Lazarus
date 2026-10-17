@@ -1,0 +1,95 @@
+/// Contrato de la sesión Live con el asistente (Gemini vía proxy del backend).
+///
+/// No expone nada sobre WebSockets, JSON ni el protocolo de frames: eso vive en
+/// el data source concreto (`GeminiLiveClient`). El controller solo conoce esta
+/// API, lo que permite sustituir el transporte (o usar un fake en tests) sin
+/// tocar la lógica de orquestación ni la UI.
+library;
+
+import '../entities/live_close.dart';
+import '../entities/live_message.dart';
+
+abstract class LiveSessionRepository {
+  /// `true` mientras hay una sesión abierta con el backend.
+  bool get connected;
+
+  /// Abre la sesión. Si ya hay una en curso, no hace nada (evita duplicados).
+  /// [onClose] solo se invoca cuando la sesión termina sin que la app la haya
+  /// cerrado (el botón Detener no lo dispara).
+  void connect({
+    required String language,
+    String? voice,
+    String? assistantName,
+    String? userName,
+    String? verbosity,
+    bool? describing,
+
+    /// `false` = sin permiso de cámara: el asistente trabaja solo con audio.
+    bool camera = true,
+
+    /// `true` = sesión con la pantalla bloqueada: sin imágenes desde el inicio.
+    bool screenLocked = false,
+
+    /// `true` = TalkBack activo: los gestos se indican como "toca dos veces".
+    bool screenReader = false,
+
+    /// Token del teléfono en el panel del piloto (HU-044).
+    String? deviceToken,
+    required void Function(LiveResponse message) onResponse,
+    required void Function(LiveCloseCause cause) onClose,
+    required void Function(Object error) onError,
+  });
+
+  void disconnect();
+
+  /// Causa del último cierre que no se arregla reintentando, según el backend:
+  /// saldo o cuota agotados, servicio en pausa y, con el [deviceToken] del
+  /// teléfono, sesión cerrada desde el panel, teléfono pendiente o
+  /// deshabilitado y minutos del día agotados; `null` si no hay. Se consulta
+  /// cuando la sesión se corta sin código (Fase 0: a través de Render, el
+  /// saldo agotado y el cierre desde el panel llegaron sin código).
+  Future<LiveCloseCause?> lastFailureCause({String? deviceToken});
+
+  /// Chunk de audio del micrófono (PCM 16-bit 16 kHz, base64).
+  void sendAudio(String base64Pcm);
+
+  /// Frame de cámara (JPEG base64).
+  void sendImage(String base64Jpeg, [String mimeType]);
+
+  /// Dispara el saludo inicial una vez establecida la sesión.
+  void sendKickoff();
+
+  /// Tras un cambio de voz: pide una muestra breve de la nueva voz.
+  void sendVoiceSample();
+
+  /// Tras un cambio de idioma: pide una confirmación corta en el idioma nuevo.
+  void sendLanguageChanged();
+
+  /// Tras reactivar el micrófono (salir de silencio total): pide confirmación.
+  void sendMicResumed();
+
+  /// Alerta SOS enviada sola (sin respuesta a la confirmación): le pasa el
+  /// resultado al asistente para que se lo diga a la persona.
+  void sendSosResult(String result);
+
+  /// La Ruta A por Unicentro se desactivó durante la sesión (HU-019): le pasa
+  /// el hecho al asistente para que lo avise y ofrezca la ruta alterna.
+  void sendRouteNotice(String notice);
+
+  /// Primer mensaje de una sesión abierta con la pantalla bloqueada (HU-017):
+  /// el asistente avisa que sigue sin ver.
+  void sendCameraPaused();
+
+  /// Primer mensaje de la sesión abierta al desbloquear: la cámara volvió.
+  void sendCameraResumed();
+
+  /// Ciclo de observación: pide al asistente que mire la imagen actual y avise
+  /// solo si hay un riesgo o algo nuevo (HU-040).
+  /// Con [risksOnly] (descripciones en pausa), solo debe avisar de riesgos.
+  void sendObserve({bool risksOnly = false});
+
+  /// Responde a las funciones que pidió el asistente (toolCall). [result] le dice
+  /// si se aplicó (`ok`) o por qué no, para que el asistente se lo explique a la
+  /// persona con su propia voz.
+  void sendToolResponse(List<({String id, String name, String result})> calls);
+}
