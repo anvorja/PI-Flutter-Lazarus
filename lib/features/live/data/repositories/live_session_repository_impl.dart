@@ -89,6 +89,9 @@ class LiveSessionRepositoryImpl implements LiveSessionRepository {
   void sendSosResult(String result) => _client?.sendSosResult(result);
 
   @override
+  void sendRouteNotice(String notice) => _client?.sendRouteNotice(notice);
+
+  @override
   void sendCameraPaused() => _client?.sendCameraPaused();
 
   @override

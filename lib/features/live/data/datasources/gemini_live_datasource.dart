@@ -43,6 +43,10 @@ const String observeTrigger = '[OBSERVA]';
 /// Igual que [observeTrigger] con las descripciones en pausa: solo riesgos.
 const String observeRisksTrigger = '[OBSERVA_RIESGOS]';
 
+/// Sentinela del aviso de la Ruta A (HU-019): Unicentro está por cerrar o ya
+/// cerró, seguida del hecho que decidió la app (lo interpreta el system prompt).
+const String routeNoticeTrigger = '[UNICENTRO]';
+
 /// Pantalla bloqueada (HU-017): primer mensaje de la sesión sin imágenes que se
 /// abre al bloquear; el asistente avisa que sigue sin ver (lo interpreta el
 /// system prompt).
@@ -249,6 +253,10 @@ class GeminiLiveClient {
 
   /// Alerta SOS enviada sin confirmación: el asistente comunica el resultado.
   void sendSosResult(String result) => sendText('$sosTrigger $result');
+
+  /// Ruta A desactivada a mitad de la sesión: el asistente lo avisa (HU-019).
+  void sendRouteNotice(String notice) =>
+      sendText('$routeNoticeTrigger $notice');
 
   /// Pantalla bloqueada: la cámara se detuvo.
   void sendCameraPaused() => sendText(cameraPausedTrigger);
