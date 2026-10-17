@@ -4,6 +4,8 @@
 /// leen/observan estos providers.
 library;
 
+import 'dart:ui' as ui;
+
 import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -106,7 +108,7 @@ final announcerProvider =
             view != null) {
           SemanticsService.sendAnnouncement(
             view,
-            message,
+            withScreenReaderGestures(message, language),
             TextDirection.ltr,
             assertiveness: Assertiveness.assertive,
           );
@@ -121,6 +123,40 @@ final announcerProvider =
             });
       };
     });
+
+/// Si TalkBack está activo (HU-023). Se consulta al abrir cada sesión, porque
+/// la persona puede activarlo o desactivarlo con la app abierta.
+final screenReaderActiveProvider = Provider<bool Function()>(
+  (ref) =>
+      () => ui
+          .PlatformDispatcher
+          .instance
+          .accessibilityFeatures
+          .accessibleNavigation,
+);
+
+/// Aviso que solo lee TalkBack (HU-023): sin lector de pantalla no hace nada,
+/// porque la persona ya oye al asistente. En pruebas se sustituye por un fake.
+final screenReaderAnnouncerProvider = Provider<void Function(String message)>((
+  ref,
+) {
+  return (message) {
+    // Sin WidgetsBinding: también funciona en las pruebas del controller.
+    final dispatcher = ui.PlatformDispatcher.instance;
+    final view = dispatcher.implicitView;
+    if (!dispatcher.accessibilityFeatures.accessibleNavigation ||
+        view == null) {
+      return;
+    }
+    liveLog('[Lazarus] aviso de TalkBack: $message');
+    SemanticsService.sendAnnouncement(
+      view,
+      message,
+      TextDirection.ltr,
+      assertiveness: Assertiveness.assertive,
+    );
+  };
+});
 
 /// Síntesis de voz del teléfono, compartida por el aviso y su corte.
 final _systemTtsProvider = Provider<FlutterTts>((ref) {

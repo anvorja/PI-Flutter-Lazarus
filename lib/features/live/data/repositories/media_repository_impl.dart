@@ -11,6 +11,7 @@ import '../../domain/repositories/media_repository.dart';
 import '../datasources/audio_capture_datasource.dart';
 import '../datasources/audio_playback_datasource.dart';
 import '../datasources/audio_route_datasource.dart' as audio_route;
+import '../datasources/screen_reader_speech_datasource.dart' as screen_reader;
 import '../datasources/frame_archive.dart';
 import '../datasources/video_capture_datasource.dart';
 import '../../../../core/debug/live_debug.dart';
@@ -52,6 +53,9 @@ class MediaRepositoryImpl implements MediaRepository {
 
   @override
   Future<bool> isHeadsetConnected() => audio_route.isHeadsetConnected();
+
+  @override
+  Stream<bool> screenReaderSpeech() => screen_reader.screenReaderSpeech();
 
   @override
   Future<void> startMic(void Function(String base64Pcm) onChunk) async {

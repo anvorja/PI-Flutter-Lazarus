@@ -14,7 +14,11 @@ import '../../domain/repositories/note_recorder.dart';
 
 const String fieldNotesFileName = 'notas_campo.csv';
 const String fieldNotesHeader =
-    'hora,nota,latitud,longitud,precision_m,estado_gps';
+    'hora,nota,latitud,longitud,precision_m,estado_gps,rumbo_grados,rumbo_fuente';
+
+/// Notas con el encabezado anterior (sin rumbo): se conservan aparte para no
+/// mezclar columnas.
+const String fieldNotesPreviousFileName = 'notas_campo_anterior.csv';
 
 class CsvNoteRecorder implements NoteRecorder {
   CsvNoteRecorder(this._directory);
@@ -27,7 +31,14 @@ class CsvNoteRecorder implements NoteRecorder {
     try {
       final dir = await _directory();
       final file = File('${dir.path}/$fieldNotesFileName');
+      if (file.existsSync()) {
+        final lines = file.readAsLinesSync();
+        if (lines.isNotEmpty && lines.first != fieldNotesHeader) {
+          file.renameSync('${dir.path}/$fieldNotesPreviousFileName');
+        }
+      }
       final fix = note.fix;
+      final heading = note.heading;
       final line = [
         note.at.toIso8601String(),
         csvField(note.text),
@@ -35,6 +46,8 @@ class CsvNoteRecorder implements NoteRecorder {
         fix?.longitude.toStringAsFixed(6) ?? '',
         fix?.accuracyM.toStringAsFixed(1) ?? '',
         fix == null ? '' : note.reliability.name,
+        heading?.degrees.toStringAsFixed(0) ?? '',
+        heading?.source.name ?? '',
       ].join(',');
       final header = file.existsSync() ? '' : '$fieldNotesHeader\n';
       file.writeAsStringSync(

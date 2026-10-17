@@ -1,11 +1,13 @@
 import 'package:app/features/emergency/domain/entities/emergency_contact.dart';
 import 'package:app/features/emergency/presentation/providers/emergency_providers.dart';
+import 'package:app/features/live/domain/entities/live_message.dart';
 import 'package:app/features/live/presentation/controllers/live_controller.dart';
 import 'package:app/features/live/presentation/pages/live_home_page.dart';
 import 'package:app/features/live/presentation/providers/live_providers.dart';
 import 'package:app/features/location/presentation/providers/location_providers.dart';
 import 'package:app/main.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -17,14 +19,16 @@ void main() {
   late FakeLiveSessionRepository session;
   late FakeMediaRepository media;
   late List<String> announcements;
+  late List<String> screenReader; // lo que leyó TalkBack (HU-023)
   late FakeEmergencyRepository emergency;
 
-  Future<void> pumpApp(WidgetTester tester) async {
+  Future<void> pumpApp(WidgetTester tester, {bool talkBack = false}) async {
     SharedPreferences.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();
     session = FakeLiveSessionRepository();
     media = FakeMediaRepository();
     announcements = [];
+    screenReader = [];
     // Contacto de prueba (datos ficticios).
     emergency = FakeEmergencyRepository(
       contact: const EmergencyContact(name: 'Marta', phone: '+573001112233'),
@@ -48,6 +52,8 @@ void main() {
           trackRecorderProvider.overrideWithValue(FakeTrackRecorder()),
           announcerProvider.overrideWithValue((m, _) => announcements.add(m)),
           announcerStopProvider.overrideWithValue(() {}),
+          screenReaderAnnouncerProvider.overrideWithValue(screenReader.add),
+          screenReaderActiveProvider.overrideWithValue(() => talkBack),
           emergencyRepositoryProvider.overrideWithValue(emergency),
         ],
         child: const LazarusApp(),
@@ -137,17 +143,90 @@ void main() {
     final semantics = tester.ensureSemantics();
     await pumpApp(tester);
 
-    final area = find.bySemanticsLabel('Toca para empezar');
+    // HU-023, regla 1: área etiquetada "Iniciar asistente" con doble toque.
+    final area = find.bySemanticsLabel('Iniciar asistente');
     expect(area, findsOneWidget);
     expect(
       tester.getSemantics(area),
-      isSemantics(hasTapAction: true, isLiveRegion: true),
+      isSemantics(
+        hasTapAction: true,
+        hasLongPressAction: true,
+        isLiveRegion: false,
+        onTapHint: 'iniciar el asistente',
+        onLongPressHint: 'enviar una alerta SOS',
+      ),
     );
 
-    tester.semantics.tap(find.semantics.byLabel('Toca para empezar'));
+    tester.semantics.tap(find.semantics.byLabel('Iniciar asistente'));
     await tester.pump();
     expect(session.connectCalls, 1);
+    // El doble toque tiene respuesta mientras llega el saludo.
+    expect(screenReader, [noticeText(LiveNotice.connecting, 'es')]);
     semantics.dispose();
+  });
+
+  group('TalkBack (HU-023)', () {
+    int focusable() => find.semantics
+        .byPredicate((node) {
+          final data = node.getSemanticsData();
+          return data.label.isNotEmpty ||
+              data.hasAction(SemanticsAction.tap) ||
+              data.hasAction(SemanticsAction.longPress);
+        })
+        .evaluate()
+        .length;
+
+    testWidgets('criterio 1: con la sesión y las transcripciones a la vista, '
+        'como máximo 3 elementos enfocables', (tester) async {
+      final semantics = tester.ensureSemantics();
+      await pumpApp(tester);
+      await startSession(tester);
+      session.emitResponse(
+        const LiveResponse(
+          type: LiveResponseType.inputTranscription,
+          data: LiveTranscription(text: '¿Qué hay adelante?', finished: true),
+        ),
+      );
+      session.emitResponse(
+        const LiveResponse(
+          type: LiveResponseType.outputTranscription,
+          data: LiveTranscription(text: 'Una puerta abierta.', finished: true),
+        ),
+      );
+      await tester.pump();
+      expect(find.text('Una puerta abierta.'), findsOneWidget);
+
+      expect(focusable(), lessThanOrEqualTo(3));
+      expect(find.bySemanticsLabel('Una puerta abierta.'), findsNothing);
+      expect(find.bySemanticsLabel('Asistente escuchando'), findsOneWidget);
+      semantics.dispose();
+    });
+
+    testWidgets('la sesión avisa al backend si TalkBack está activo, para '
+        'que el asistente diga "toca dos veces"', (tester) async {
+      await pumpApp(tester, talkBack: true);
+      await startSession(tester);
+      expect(session.lastScreenReader, isTrue);
+    });
+
+    testWidgets('sin TalkBack no lo avisa', (tester) async {
+      await pumpApp(tester);
+      await startSession(tester);
+      expect(session.lastScreenReader, isFalse);
+    });
+
+    testWidgets('con la sesión activa tocar no hace nada: no se ofrece el '
+        'doble toque, solo el SOS', (tester) async {
+      final semantics = tester.ensureSemantics();
+      await pumpApp(tester);
+      await startSession(tester);
+
+      expect(
+        tester.getSemantics(find.bySemanticsLabel('Asistente escuchando')),
+        isSemantics(hasTapAction: false, hasLongPressAction: true),
+      );
+      semantics.dispose();
+    });
   });
 
   group('SOS con el gesto (HU-042)', () {

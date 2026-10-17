@@ -7,7 +7,9 @@ import 'package:app/features/field_notes/data/repositories/csv_note_recorder.dar
 import 'package:app/features/field_notes/domain/entities/field_note.dart';
 import 'package:app/features/field_notes/presentation/providers/field_notes_providers.dart';
 import 'package:app/features/live/domain/entities/live_message.dart';
+import 'package:app/features/live/presentation/controllers/live_controller.dart';
 import 'package:app/features/live/presentation/providers/live_providers.dart';
+import 'package:app/features/location/domain/entities/heading.dart';
 import 'package:app/features/location/domain/entities/location_fix.dart';
 import 'package:app/features/location/presentation/providers/location_providers.dart';
 import 'package:flutter/foundation.dart';
@@ -121,11 +123,97 @@ void main() {
       expect(result, startsWith('unavailable'));
     });
 
+    void hear(String text) => session.emitResponse(
+      LiveResponse(
+        type: LiveResponseType.inputTranscription,
+        data: LiveTranscription(text: text, finished: false),
+      ),
+    );
+
+    Future<void> assistantSaysAndEnds(String text) async {
+      session.emitResponse(
+        LiveResponse(
+          type: LiveResponseType.outputTranscription,
+          data: LiveTranscription(text: text, finished: true),
+        ),
+      );
+      session.emitResponse(
+        const LiveResponse(type: LiveResponseType.turnComplete),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+
+    test(
+      'si dice "Anotado." sin llamar a add_note, la app guarda la nota',
+      () async {
+        hear(' Ano');
+        hear('ta que');
+        hear(' estoy en los torniquetes.');
+        await assistantSaysAndEnds('Anotado.');
+        expect(notes.notes.single.text, 'estoy en los torniquetes');
+        expect(
+          logs,
+          contains(
+            '[Lazarus] nota guardada por la app (el asistente dijo "Anotado" sin llamar a add_note)',
+          ),
+        );
+      },
+    );
+
+    test('si sí llama a add_note, no la duplica', () async {
+      hear(' Anota que hay un escalón.');
+      await addNote({'text': 'hay un escalón'});
+      await assistantSaysAndEnds('Anotado.');
+      expect(notes.notes, hasLength(1));
+    });
+
+    test(
+      'sin "Anotado." no guarda nada (p. ej. pregunta qué anotar)',
+      () async {
+        hear(' Anota.');
+        await assistantSaysAndEnds('¿Qué quieres que anote?');
+        hear(' Que hay un poste.');
+        await assistantSaysAndEnds('Semáforo en rojo.');
+        expect(notes.notes, isEmpty);
+      },
+    );
+
+    test('una nota ya guardada no se repite en el turno siguiente', () async {
+      hear(' Anota que llegamos a la portería.');
+      await assistantSaysAndEnds('Anotado.');
+      hear(' ¿Dónde estoy?');
+      await assistantSaysAndEnds('Anotado.');
+      expect(notes.notes, hasLength(1));
+    });
+
     test('al Detener, el log dice cuántas notas hubo', () async {
       await addNote({'text': 'uno'});
       await addNote({'text': 'dos'});
       container.read(liveControllerProvider.notifier).disconnect();
       expect(logs, contains('[Lazarus] bitácora: 2 notas en esta sesión'));
+    });
+  });
+
+  group('nota "Anotado." sin llamar a add_note (Fase 0)', () {
+    test('frases de la caminata: lo que sigue a "anota que", o lo anterior '
+        'si "anota" va al final', () {
+      expect(
+        noteRequestText(' Anota que estoy en la estación.'),
+        'estoy en la estación',
+      );
+      expect(
+        noteRequestText(' Estoy en la estación y voy para Univalle, anota.'),
+        'Estoy en la estación y voy para Univalle',
+      );
+      expect(
+        noteRequestText('apunta que el semáforo peatonal está dañado'),
+        'el semáforo peatonal está dañado',
+      );
+      expect(noteRequestText(' Anota.'), isNull);
+      expect(noteRequestText('¿Dónde estoy?'), isNull);
+      expect(saysNoted('Anotado. El semáforo peatonal está en verde.'), isTrue);
+      expect(saysNoted('Noted.'), isTrue);
+      expect(saysNoted('Semáforo en rojo.'), isFalse);
     });
   });
 
@@ -154,10 +242,45 @@ void main() {
       expect(
         lines[1],
         endsWith(
-          ',"semáforo sin sonido, frente al paradero",0.000000,0.000000,5.0,reliable',
+          ',"semáforo sin sonido, frente al paradero",0.000000,0.000000,5.0,reliable,,',
         ),
       );
-      expect(lines[2], endsWith(',"dijo ""cuidado""",,,,'));
+      expect(lines[2], endsWith(',"dijo ""cuidado""",,,,,,'));
+    });
+
+    test(
+      'guarda el rumbo de la brújula o del GPS (pedido en la Fase 0)',
+      () async {
+        final recorder = CsvNoteRecorder(() async => dir);
+        File file() => File('${dir.path}/$fieldNotesFileName');
+        await recorder.add(
+          FieldNote(
+            at: DateTime(2026, 10, 17, 11, 55),
+            text: 'portería de Unicentro',
+            heading: const Heading(
+              degrees: 312.4,
+              source: HeadingSource.compass,
+            ),
+          ),
+        );
+        final lines = file().readAsLinesSync();
+        expect(lines.first, endsWith(',rumbo_grados,rumbo_fuente'));
+        expect(lines[1], endsWith(',312,compass'));
+      },
+    );
+
+    test('un archivo con el encabezado anterior se guarda aparte', () async {
+      final recorder = CsvNoteRecorder(() async => dir);
+      File file() => File('${dir.path}/$fieldNotesFileName');
+      file().writeAsStringSync(
+        'hora,nota,latitud,longitud,precision_m,estado_gps\nx,y,,,,\n',
+      );
+      await recorder.add(FieldNote(at: DateTime(2026, 10, 17), text: 'cebra'));
+      expect(file().readAsLinesSync().first, fieldNotesHeader);
+      expect(
+        File('${dir.path}/$fieldNotesPreviousFileName').readAsLinesSync(),
+        hasLength(2),
+      );
     });
   });
 }

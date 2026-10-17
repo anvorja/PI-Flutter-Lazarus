@@ -52,14 +52,24 @@ flutter run --dart-define=BACKEND_URL=http://<ip-del-backend>:8000
 
 ## Pruebas en el teléfono físico (QA)
 
-Así se preparan las pruebas de los casos de QA (CP-LAZA-n) en el teléfono del piloto.
-Las pruebas de campo se hacen con **datos móviles**, como las usará la persona: el
-backend se expone con un túnel temporal de ngrok y el Wi-Fi del teléfono queda apagado
+Hay dos maneras de probar en el teléfono:
+
+| Modo | Backend | Cuándo | Secciones |
+| --- | --- | --- | --- |
+| **Piloto** | Render (`develop` de PI-Backend) | Jornadas de campo con los participantes | *APK del piloto* y 3 |
+| **Solo para desarrollo** | El del PC, por ngrok o por la LAN | Probar una rama del backend antes de fusionarla, sin pasar por Render | *Flujo general*, 1, 2 y 3 |
+
+El flujo con ngrok sigue vigente para desarrollo: permite probar en la calle una rama
+del backend que todavía no está en Render.
+
+Así se preparan las pruebas de los casos de QA (CP-LAZA-n) en el teléfono.
+Las pruebas de campo se hacen con **datos móviles**, como las usará la persona; en el
+modo de desarrollo, el backend se expone con un túnel temporal de ngrok y el Wi-Fi del teléfono queda apagado
 desde antes de abrir la app. La app guarda la evidencia en el teléfono; al volver, el
 teléfono se conecta al Wi-Fi de la casa y la evidencia se baja al PC por depuración
 inalámbrica.
 
-### Flujo general (leer primero)
+### Flujo general (solo para desarrollo)
 
 La **depuración inalámbrica solo sirve para dos cosas**: instalar el APK y sacar la
 evidencia. **Durante la prueba la app no depende de adb**: habla con el backend por la
@@ -79,7 +89,7 @@ la sesión de adb. El orden es:
 4. **Al volver**: encender el Wi-Fi, reconectar adb (el puerto casi seguro cambió, ver
    la pantalla de Depuración inalámbrica) y bajar la evidencia al PC.
 
-### 1. Conectar el teléfono por depuración inalámbrica
+### 1. Conectar el teléfono por depuración inalámbrica (solo para desarrollo)
 
 En el teléfono: *Opciones de desarrollador* → **Depuración inalámbrica** (activar). La
 pantalla muestra `IP:puerto`; **el puerto cambia cada vez** que se activa.
@@ -100,7 +110,7 @@ adb connect <IP>:<PUERTO>                    # el de la pantalla principal, no e
 Si sale `Unable to start pairing client`: `adb kill-server && adb start-server` y
 repetir.
 
-### 2. Tres terminales
+### 2. Tres terminales (solo para desarrollo)
 
 **Terminal 1: backend** (en la rama de la HU que se prueba)
 
@@ -131,6 +141,28 @@ adb -s <IP>:<PUERTO> install -r build/app/outputs/flutter-apk/app-debug.apk
 # Logs de la app (trazas [Lazarus] y del SMS nativo), guardados como evidencia:
 adb -s <IP>:<PUERTO> logcat -v time flutter:I LazarusSos:V *:S | tee ~/prueba-<caso>.log
 ```
+
+### APK del piloto (backend en Render)
+
+Desde la Fase 0 los participantes usan el backend de Render, sin ngrok ni PC durante la
+prueba. El APK que se les pasa (por WhatsApp o por USB) se compila así:
+
+```bash
+flutter build apk --release \
+  --build-name=0.2.0 --build-number=<N> \
+  --dart-define=BACKEND_URL=https://pi-backend-lazarus.onrender.com \
+  --dart-define=FIELD_EVIDENCE=true
+
+adb install -r build/app/outputs/flutter-apk/app-release.apk
+```
+
+- `FIELD_EVIDENCE=true` es obligatorio en el piloto: sin él el teléfono no guarda
+  `lazarus.log` ni las fotos (sección 3) y solo queda la telemetría.
+- `<N>` debe ser mayor que el del APK instalado; si no, Android rechaza la
+  instalación con `INSTALL_FAILED_VERSION_DOWNGRADE`.
+- En la versión que se publique para el público general **no** va `FIELD_EVIDENCE`
+  (guarda voz transcrita y fotos, cubiertas solo por el consentimiento del piloto);
+  `BACKEND_URL` sí, con la URL del backend de producción.
 
 ### 3. Evidencia que queda en el teléfono
 

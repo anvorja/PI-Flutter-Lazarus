@@ -19,6 +19,7 @@ void main() {
   late FakeMediaRepository media;
   late List<String> logs;
   late List<String> announced; // lo que dijo la voz del teléfono
+  late List<String> screenReader; // lo que leyó TalkBack (HU-023)
   late ProviderContainer container;
 
   LiveUiState state() => container.read(liveControllerProvider);
@@ -59,6 +60,7 @@ void main() {
     media = FakeMediaRepository();
     logs = [];
     announced = [];
+    screenReader = [];
     final original = debugPrint;
     debugPrint = (message, {wrapWidth}) => logs.add(message ?? '');
     addTearDown(() => debugPrint = original);
@@ -76,6 +78,7 @@ void main() {
         trackRecorderProvider.overrideWithValue(FakeTrackRecorder()),
         announcerProvider.overrideWithValue((m, _) => announced.add(m)),
         announcerStopProvider.overrideWithValue(() {}),
+        screenReaderAnnouncerProvider.overrideWithValue(screenReader.add),
         retryDelayProvider.overrideWithValue((_) => Duration.zero),
       ],
     );
@@ -338,6 +341,60 @@ void main() {
       expect(asksTotalSilence('Silêncio total'), isTrue);
       expect(asksTotalSilence('Silenzio totale'), isTrue);
       expect(asksTotalSilence('Hay silencio en la sala'), isFalse);
+    });
+  });
+
+  group('TalkBack (HU-023, criterio 2)', () {
+    test('al entrar en silencio total anuncia el estado y cómo reactivarlo, '
+        'después de la confirmación del asistente', () async {
+      screenReader.clear();
+      await heard('Silencio total.');
+      await toolCall('set_microphone', {'active': false});
+      expect(screenReader, isEmpty); // no tapa al asistente
+      await assistantSays('entendido');
+      emit(LiveResponseType.turnComplete);
+      await settle();
+      expect(screenReader, isEmpty); // aún suena la confirmación
+      media.onDrained!();
+      await settle();
+      expect(screenReader, [noticeText(LiveNotice.muted, 'es')]);
+      expect(screenReader.single, contains('toca dos veces'));
+      // Sin TalkBack no suena por la voz del teléfono: es silencio total.
+      expect(announced, isEmpty);
+    });
+
+    test('también si el asistente ya hablaba cuando llegó la función: el '
+        'aviso suena al terminar esa respuesta, sin esperar otra', () async {
+      screenReader.clear();
+      await heard('Silencio total.');
+      await assistantSays('toca-dos-veces');
+      await toolCall('set_microphone', {'active': false});
+      emit(LiveResponseType.turnComplete);
+      await settle();
+      expect(screenReader, isEmpty);
+      media.onDrained!();
+      await settle();
+      expect(screenReader, [noticeText(LiveNotice.muted, 'es')]);
+    });
+
+    test('también si lo aplica la app', () async {
+      screenReader.clear();
+      await heard('Silencio total.');
+      await assistantSays('toca-la-pantalla');
+      emit(LiveResponseType.turnComplete);
+      await settle();
+      expect(screenReader, [noticeText(LiveNotice.muted, 'es')]);
+    });
+
+    test('el aviso está en los 5 idiomas', () {
+      for (final lang in ['es', 'en', 'fr', 'pt', 'it']) {
+        expect(noticeText(LiveNotice.muted, lang), isNot(isEmpty));
+        expect(noticeText(LiveNotice.connecting, lang), isNot(isEmpty));
+      }
+      expect(
+        noticeText(LiveNotice.muted, 'en'),
+        isNot(noticeText(LiveNotice.muted, 'es')),
+      );
     });
   });
 

@@ -29,12 +29,26 @@ abstract class LiveSessionRepository {
 
     /// `true` = sesión con la pantalla bloqueada: sin imágenes desde el inicio.
     bool screenLocked = false,
+
+    /// `true` = TalkBack activo: los gestos se indican como "toca dos veces".
+    bool screenReader = false,
+
+    /// Token del teléfono en el panel del piloto (HU-044).
+    String? deviceToken,
     required void Function(LiveResponse message) onResponse,
     required void Function(LiveCloseCause cause) onClose,
     required void Function(Object error) onError,
   });
 
   void disconnect();
+
+  /// Causa del último cierre que no se arregla reintentando, según el backend:
+  /// saldo o cuota agotados, servicio en pausa y, con el [deviceToken] del
+  /// teléfono, sesión cerrada desde el panel, teléfono pendiente o
+  /// deshabilitado y minutos del día agotados; `null` si no hay. Se consulta
+  /// cuando la sesión se corta sin código (Fase 0: a través de Render, el
+  /// saldo agotado y el cierre desde el panel llegaron sin código).
+  Future<LiveCloseCause?> lastFailureCause({String? deviceToken});
 
   /// Chunk de audio del micrófono (PCM 16-bit 16 kHz, base64).
   void sendAudio(String base64Pcm);

@@ -20,6 +20,10 @@ abstract class MediaRepository {
   /// medio-dúplex).
   Future<bool> isHeadsetConnected();
 
+  /// `true` mientras habla TalkBack (HU-023): en altavoz el micrófono captaría
+  /// su voz como si fuera la persona.
+  Stream<bool> screenReaderSpeech();
+
   Future<void> startMic(void Function(String base64Pcm) onChunk);
   Future<void> stopMic();
 

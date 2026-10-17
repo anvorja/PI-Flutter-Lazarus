@@ -4,6 +4,7 @@ library;
 
 import 'package:flutter/foundation.dart';
 
+import '../../../location/domain/entities/heading.dart';
 import '../../../location/domain/entities/location_fix.dart';
 
 @immutable
@@ -13,6 +14,7 @@ class FieldNote {
     required this.text,
     this.fix,
     this.reliability = GpsReliability.unknown,
+    this.heading,
   });
 
   final DateTime at;
@@ -21,4 +23,8 @@ class FieldNote {
   /// Última posición conocida; `null` sin GPS.
   final LocationFix? fix;
   final GpsReliability reliability;
+
+  /// Hacia dónde miraba o caminaba (brújula o GPS); `null` sin lecturas. Lo
+  /// pidieron los participantes de la Fase 0 para cada punto.
+  final Heading? heading;
 }

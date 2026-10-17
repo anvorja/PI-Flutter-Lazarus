@@ -68,6 +68,8 @@ class GeminiLiveClientOptions {
     this.describing,
     this.camera = true,
     this.screenLocked = false,
+    this.screenReader = false,
+    this.deviceToken,
     this.onResponse,
     this.onOpen,
     this.onClose,
@@ -97,6 +99,13 @@ class GeminiLiveClientOptions {
   /// `true` = sesión abierta con la pantalla bloqueada: no recibe imágenes y el
   /// asistente lo sabe desde el system prompt (HU-017).
   final bool screenLocked;
+
+  /// `true` = TalkBack activo: el asistente indica los gestos como "toca dos
+  /// veces" (HU-023).
+  final bool screenReader;
+
+  /// Token del teléfono en el panel del piloto (HU-044); `null` sin registro.
+  final String? deviceToken;
 
   final void Function(LiveResponse message)? onResponse;
   final void Function()? onOpen;
@@ -184,6 +193,8 @@ class GeminiLiveClient {
       if (_opts.describing == false) 'describing': false,
       if (!_opts.camera) 'camera': false,
       if (_opts.screenLocked) 'screenLocked': true,
+      if (_opts.screenReader) 'screenReader': true,
+      if (_opts.deviceToken != null) 'deviceToken': _opts.deviceToken,
     });
   }
 

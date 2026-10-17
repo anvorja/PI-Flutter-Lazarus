@@ -25,10 +25,6 @@ const Color stopButtonColor = Color(0xFFC62828);
 /// Lo que lee TalkBack sobre el botón.
 const String stopButtonSemanticsLabel = 'Detener asistente';
 
-/// Pista de TalkBack para el SOS: con TalkBack, tocar dos veces y mantener.
-const String sosGestureSemanticsHint =
-    'Mantén presionado para enviar una alerta SOS';
-
 class LiveHomePage extends ConsumerStatefulWidget {
   const LiveHomePage({super.key});
 
@@ -68,16 +64,20 @@ class _LiveHomePageState extends ConsumerState<LiveHomePage> {
       body: SafeArea(
         child: Column(
           children: [
-            // Toda el área superior es el gesto de inicio. Con TalkBack se anuncia
-            // el estado y un doble toque hace lo mismo que un toque.
+            // Toda el área superior es el gesto de inicio. Con TalkBack (HU-023)
+            // se lee el estado; el doble toque hace lo mismo que un toque y
+            // solo se ofrece cuando tocar hace algo. No es región viva: TalkBack
+            // leería cada cambio encima del saludo del asistente y el micrófono
+            // lo oiría como si fuera la persona. Los cambios que importan se
+            // anuncian desde el controller, en momentos seguros.
             Expanded(
               child: Semantics(
                 container: true,
-                liveRegion: true,
-                label: state.statusLabel,
-                hint: sosGestureSemanticsHint,
-                onTap: controller.onTap,
+                label: state.screenReaderLabel,
+                onTap: state.tapHint == null ? null : controller.onTap,
+                onTapHint: state.tapHint,
                 onLongPress: controller.onSosGesture,
+                onLongPressHint: state.longPressHint,
                 child: RawGestureDetector(
                   behavior: HitTestBehavior.opaque,
                   excludeFromSemantics: true,
@@ -115,16 +115,25 @@ class _LiveHomePageState extends ConsumerState<LiveHomePage> {
                             ),
                           ),
                           const SizedBox(height: 24),
-                          if (state.userTranscript.isNotEmpty)
-                            TranscriptLine(
-                              icon: Icons.person,
-                              text: state.userTranscript,
+                          // Las transcripciones son para quien acompaña: con
+                          // TalkBack repetirían lo que ya sonó y sumarían
+                          // elementos enfocables (máximo 3, HU-023).
+                          ExcludeSemantics(
+                            child: Column(
+                              children: [
+                                if (state.userTranscript.isNotEmpty)
+                                  TranscriptLine(
+                                    icon: Icons.person,
+                                    text: state.userTranscript,
+                                  ),
+                                if (state.assistantTranscript.isNotEmpty)
+                                  TranscriptLine(
+                                    icon: Icons.assistant,
+                                    text: state.assistantTranscript,
+                                  ),
+                              ],
                             ),
-                          if (state.assistantTranscript.isNotEmpty)
-                            TranscriptLine(
-                              icon: Icons.assistant,
-                              text: state.assistantTranscript,
-                            ),
+                          ),
                         ],
                       ),
                     ),
