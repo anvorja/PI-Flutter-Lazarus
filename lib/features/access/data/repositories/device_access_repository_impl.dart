@@ -17,6 +17,7 @@ import 'log_chunks.dart';
 
 const String deviceTokenKey = 'device_token';
 const String _offsetPrefix = 'log_upload_offset_';
+const String routeProfilesKey = 'route_profiles';
 const _timeout = Duration(seconds: 6);
 
 class DeviceAccessRepositoryImpl implements DeviceAccessRepository {
@@ -89,6 +90,27 @@ class DeviceAccessRepositoryImpl implements DeviceAccessRepository {
       liveLog('[Lazarus] logs: no se subieron ($why); se reintenta después');
       await _forgetIfUnknown(e);
       return 0; // se reintenta en la próxima: los offsets no avanzaron
+    }
+  }
+
+  @override
+  Future<String?> routeProfiles() async {
+    final cached = _prefs.getString(routeProfilesKey);
+    final token = _prefs.getString(deviceTokenKey);
+    if (token == null) return cached;
+    try {
+      final body = await _send(
+        'GET',
+        '/api/v1/devices/me/routes',
+        token: token,
+      );
+      if (body == null) return cached;
+      await _prefs.setString(routeProfilesKey, body);
+      return body;
+    } on Object catch (e) {
+      // Sin datos en la calle: sirven los que se bajaron antes.
+      await _forgetIfUnknown(e);
+      return cached;
     }
   }
 

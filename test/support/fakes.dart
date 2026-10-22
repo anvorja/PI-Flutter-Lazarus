@@ -144,6 +144,11 @@ class FakeLiveSessionRepository implements LiveSessionRepository {
   @override
   void sendRouteNotice(String notice) => routeNotices.add(notice);
 
+  final List<String> routeGuides = [];
+
+  @override
+  void sendRouteGuide(String message) => routeGuides.add(message);
+
   /// Primeros mensajes de sesión sin cámara (`false`) y con cámara de vuelta
   /// (`true`), en orden.
   final List<bool> cameraNotices = [];
@@ -458,4 +463,10 @@ class FakeDeviceAccess implements DeviceAccessRepository {
     uploads++;
     return 1;
   }
+
+  /// Perfiles de ruta en JSON (HU-022).
+  String? routes;
+
+  @override
+  Future<String?> routeProfiles() async => routes;
 }

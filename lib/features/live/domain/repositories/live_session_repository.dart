@@ -76,6 +76,10 @@ abstract class LiveSessionRepository {
   /// el hecho al asistente para que lo avise y ofrezca la ruta alterna.
   void sendRouteNotice(String notice);
 
+  /// Con una ruta curada activa (HU-022): el punto al que se acerca o llegó la
+  /// persona, para que el asistente lo diga.
+  void sendRouteGuide(String message);
+
   /// Primer mensaje de una sesión abierta con la pantalla bloqueada (HU-017):
   /// el asistente avisa que sigue sin ver.
   void sendCameraPaused();
