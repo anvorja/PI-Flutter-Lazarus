@@ -4,6 +4,7 @@
 /// leen/observan estos providers.
 library;
 
+import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flutter/semantics.dart';
@@ -158,10 +159,54 @@ final screenReaderAnnouncerProvider = Provider<void Function(String message)>((
   };
 });
 
+/// `true` mientras suena un aviso con la voz del teléfono. En altavoz, el
+/// micrófono no se envía mientras tanto: el asistente lo oiría como si lo
+/// dijera la persona (prueba del 21-oct con el aviso del modo reunión).
+final announcerSpeakingProvider = Provider<ValueNotifier<bool>>((ref) {
+  final speaking = ValueNotifier(false);
+  ref.onDispose(speaking.dispose);
+  return speaking;
+});
+
+/// Eco que queda en la sala después del aviso.
+const Duration announcerSpeechTail = Duration(milliseconds: 300);
+
+/// Tope de la pausa del micrófono por un aviso: si Android no avisa el final
+/// (el motor de voz puede morir a mitad), el micrófono se reabre igual.
+const Duration announcerSpeechMax = Duration(seconds: 30);
+
 /// Síntesis de voz del teléfono, compartida por el aviso y su corte.
 final _systemTtsProvider = Provider<FlutterTts>((ref) {
   final tts = FlutterTts();
-  ref.onDispose(tts.stop);
+  final speaking = ref.watch(announcerSpeakingProvider);
+  Timer? tail;
+  Timer? max;
+  var disposed = false;
+  void set(bool value) {
+    if (!disposed) speaking.value = value;
+  }
+
+  void done() {
+    max?.cancel();
+    tail?.cancel();
+    tail = Timer(announcerSpeechTail, () => set(false));
+  }
+
+  tts.setStartHandler(() {
+    tail?.cancel();
+    max?.cancel();
+    max = Timer(announcerSpeechMax, () => set(false));
+    set(true);
+  });
+  tts.setCompletionHandler(done);
+  tts.setCancelHandler(done);
+  tts.setErrorHandler((_) => done());
+  ref.onDispose(() {
+    disposed = true;
+    tail?.cancel();
+    max?.cancel();
+    tts.stop();
+  });
   return tts;
 });
 

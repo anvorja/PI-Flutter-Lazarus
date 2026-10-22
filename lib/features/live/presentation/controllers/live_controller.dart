@@ -72,8 +72,8 @@ const Duration screenReaderSpeechTail = Duration(milliseconds: 300);
 
 /// Minúsculas y sin tildes, para comparar nombres en la transcripción.
 String normalizeForMatch(String text) {
-  const from = 'áàäâéèëêíìïîóòöôúùüûñ';
-  const to = 'aaaaeeeeiiiioooouuuun';
+  const from = 'áàäâãéèëêíìïîóòöôõúùüûñç';
+  const to = 'aaaaaeeeeiiiiooooouuuunc';
   final lower = text.toLowerCase().trim();
   final out = StringBuffer();
   for (final ch in lower.split('')) {
@@ -144,11 +144,16 @@ bool isSpokenWords(String text) =>
 
 /// Fin de la voz para la latencia: el último momento con voz en el micrófono,
 /// salvo que quede más de 1,5 s después de la última palabra transcrita (el
-/// ruido de la calle lo mantiene alto hasta que responde el asistente).
+/// ruido de la calle lo mantiene alto hasta que responde el asistente) o más
+/// de 3 s antes: entonces es de una frase anterior y esta se dijo en voz baja
+/// (prueba del 21-oct: "Bruno" midió 18 s en lugar de 4 s).
 DateTime endOfSpeech(DateTime? lastLoud, DateTime lastWord) {
   if (lastLoud == null) return lastWord;
   final limit = lastWord.add(const Duration(milliseconds: 1500));
-  return lastLoud.isAfter(limit) ? lastWord : lastLoud;
+  final stale = lastWord.subtract(const Duration(seconds: 3));
+  return lastLoud.isAfter(limit) || lastLoud.isBefore(stale)
+      ? lastWord
+      : lastLoud;
 }
 
 /// Pedido de nota de campo (HU-024) en lo que dijo la persona: el texto a
@@ -220,6 +225,9 @@ const Set<String> leaveMeetingPhrases = {
   'termino la reunion',
   'se acabo la reunion',
   'sal del modo reunion',
+  'vuelve a hablar', // es; prueba del 21-oct: "vuelve a hablar, el modo…"
+  'modo reunion se acabo',
+  'se acabo el modo reunion',
   'you can talk',
   'you can speak',
   'meeting is over',
@@ -234,6 +242,83 @@ bool asksLeaveMeeting(String text) {
     text,
   ).replaceAll(RegExp(r'[^a-z]+'), ' ').trim();
   return leaveMeetingPhrases.any(words.contains);
+}
+
+/// Entrar en modo reunión (normalizado). En la prueba del 21-oct, "Silencio,
+/// voy a estar en una reunión" no activó el modo hasta 30 s después, con la
+/// reunión ya empezada.
+const Set<String> enterMeetingPhrases = {
+  'modo reunion', // es
+  'modo de reunion', // prueba del 21-oct: "voy a estar en modo de reunión"
+  'modo reuniao', // pt
+  'estoy en una reunion',
+  'voy a estar en una reunion',
+  'voy a entrar a una reunion',
+  'entro a una reunion',
+  'meeting mode',
+  'i am in a meeting',
+  'mode reunion',
+  'modalita riunione',
+};
+
+/// Si la persona pidió entrar en modo reunión en [text] (y no salir de él:
+/// "el modo reunión se acabó" también nombra el modo).
+bool asksMeetingMode(String text) {
+  if (asksLeaveMeeting(text)) return false;
+  final words = normalizeForMatch(
+    text,
+  ).replaceAll(RegExp(r'[^a-z]+'), ' ').trim();
+  if (RegExp(
+    r'\b(sal|salir|acabo|termino|desactiva|quita)\b',
+  ).hasMatch(words)) {
+    return false;
+  }
+  return enterMeetingPhrases.any(words.contains);
+}
+
+/// Palabras que pueden acompañar a "SOS" sin cambiar el pedido.
+const Set<String> _sosCompanions = {
+  'ayuda',
+  'auxilio',
+  'socorro',
+  'urgente',
+  'emergencia',
+  'alerta',
+  'una',
+  'la',
+  'el',
+  'por',
+  'favor',
+  'envia',
+  'enviar',
+  'manda',
+  'mandar',
+  'help',
+  'please',
+  'send',
+  'ajuda',
+  'aiuto',
+  'aide',
+  'secours',
+};
+
+/// Si [turn] es un pedido de SOS: "SOS", "S O S" o "ese o ese", solo o con
+/// palabras como "ayuda" o el nombre del asistente. Una pregunta sobre el SOS
+/// ("¿qué hace el SOS?") no cuenta. En la prueba del 21-oct, el asistente oyó
+/// "S o s" y cerró el turno sin llamar a `trigger_sos`.
+bool asksSos(String turn, {String name = ''}) {
+  if (turn.contains('?') || turn.contains('¿')) return false;
+  final words = normalizeForMatch(
+    turn,
+  ).replaceAll(RegExp(r'[^a-z]+'), ' ').trim();
+  final sos = RegExp(r'\b(s ?o ?s|ese o ese)\b');
+  if (!sos.hasMatch(words)) return false;
+  final assistant = normalizeForMatch(name).replaceAll(RegExp(r'[^a-z]+'), '');
+  return words
+      .replaceAll(sos, ' ')
+      .split(' ')
+      .where((w) => w.isNotEmpty && w != assistant)
+      .every(_sosCompanions.contains);
 }
 
 /// Respuesta de `get_time` (LAZA-115): la hora y la fecha del reloj del
@@ -289,6 +374,9 @@ enum LiveNotice {
 
   /// SOS con el gesto, sin el asistente (HU-042). `{name}`: el contacto.
   sosGestureConfirm,
+
+  /// SOS por voz cuya pregunta del asistente no sonó (se cortó antes).
+  sosVoiceConfirm,
   sosCancelled,
   sosUnconfirmed,
   sosNoContact,
@@ -357,6 +445,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Sigo sin datos móviles. Para pedir ayuda, mantén presionada la pantalla tres segundos.',
     LiveNotice.sosGestureConfirm:
         'Alerta de emergencia para {name}. Para enviarla ya, vuelve a mantener presionada la pantalla. Para cancelar, toca una vez. Si no haces nada, se envía en unos segundos.',
+    LiveNotice.sosVoiceConfirm:
+        '¿Envío la alerta a {name}? Di sí o no. Para cancelar, también puedes tocar la pantalla. Si no respondes, se envía en unos segundos.',
     LiveNotice.sosCancelled: 'Alerta cancelada.',
     LiveNotice.sosUnconfirmed:
         'Envié la alerta, pero la red no confirmó que llegó. Si puedes, llama a tu contacto o al 123.',
@@ -409,6 +499,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Still no mobile data. To ask for help, press and hold the screen for three seconds.',
     LiveNotice.sosGestureConfirm:
         'Emergency alert for {name}. To send it now, press and hold the screen again. To cancel, tap once. If you do nothing, it is sent in a few seconds.',
+    LiveNotice.sosVoiceConfirm:
+        'Shall I send the alert to {name}? Say yes or no. To cancel, you can also tap the screen. If you do not answer, it is sent in a few seconds.',
     LiveNotice.sosCancelled: 'Alert cancelled.',
     LiveNotice.sosUnconfirmed:
         'I sent the alert, but the network did not confirm it arrived. If you can, call your contact or 123.',
@@ -461,6 +553,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Toujours pas de données mobiles. Pour demander de l\'aide, maintiens l\'écran appuyé trois secondes.',
     LiveNotice.sosGestureConfirm:
         'Alerte d\'urgence pour {name}. Pour l\'envoyer maintenant, maintiens de nouveau l\'écran appuyé. Pour annuler, touche une fois. Si tu ne fais rien, elle part dans quelques secondes.',
+    LiveNotice.sosVoiceConfirm:
+        'J\'envoie l\'alerte à {name} ? Dis oui ou non. Pour annuler, tu peux aussi toucher l\'écran. Si tu ne réponds pas, elle part dans quelques secondes.',
     LiveNotice.sosCancelled: 'Alerte annulée.',
     LiveNotice.sosUnconfirmed:
         'J\'ai envoyé l\'alerte, mais le réseau n\'a pas confirmé qu\'elle est arrivée. Si tu peux, appelle ton contact ou le 123.',
@@ -513,6 +607,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Continuo sem dados móveis. Para pedir ajuda, mantenha a tela pressionada por três segundos.',
     LiveNotice.sosGestureConfirm:
         'Alerta de emergência para {name}. Para enviar agora, mantenha a tela pressionada de novo. Para cancelar, toque uma vez. Se não fizer nada, ele é enviado em alguns segundos.',
+    LiveNotice.sosVoiceConfirm:
+        'Envio o alerta para {name}? Diga sim ou não. Para cancelar, também pode tocar na tela. Se não responder, ele é enviado em alguns segundos.',
     LiveNotice.sosCancelled: 'Alerta cancelado.',
     LiveNotice.sosUnconfirmed:
         'Enviei o alerta, mas a rede não confirmou que chegou. Se puder, ligue para o seu contato ou para o 123.',
@@ -565,6 +661,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Ancora niente dati mobili. Per chiedere aiuto, tieni premuto lo schermo per tre secondi.',
     LiveNotice.sosGestureConfirm:
         'Avviso di emergenza per {name}. Per inviarlo subito, tieni premuto di nuovo lo schermo. Per annullare, tocca una volta. Se non fai nulla, viene inviato tra pochi secondi.',
+    LiveNotice.sosVoiceConfirm:
+        'Invio l\'avviso a {name}? Di sì o no. Per annullare, puoi anche toccare lo schermo. Se non rispondi, viene inviato tra pochi secondi.',
     LiveNotice.sosCancelled: 'Avviso annullato.',
     LiveNotice.sosUnconfirmed:
         'Ho inviato l\'avviso, ma la rete non ha confermato che sia arrivato. Se puoi, chiama il tuo contatto o il 123.',
@@ -864,6 +962,18 @@ class LiveController extends Notifier<LiveUiState> {
   /// asistente no llama a `set_meeting_mode`, la app sale igual (LAZA-113).
   bool _leaveMeetingRequested = false;
 
+  /// La persona pidió entrar en modo reunión: si el asistente no llama a
+  /// `set_meeting_mode`, la app lo activa al terminar el turno.
+  bool _meetingRequested = false;
+
+  /// Lo que dijo la persona en este turno, para la red de seguridad del SOS, y
+  /// si el asistente ya llamó a la alerta.
+  final StringBuffer _sosHeard = StringBuffer();
+  bool _sosCalled = false;
+
+  /// Sonó entera la pregunta "¿Envío la alerta…?" del asistente.
+  bool _sosQuestionHeard = false;
+
   /// La persona consultó la Ruta A y estaba disponible: si se desactiva antes
   /// de Detener, la app se lo avisa sin que pregunte (HU-019, regla 3).
   bool _routeAOffered = false;
@@ -874,6 +984,9 @@ class LiveController extends Notifier<LiveUiState> {
 
   /// TalkBack está hablando: en altavoz el micrófono no se envía (HU-023).
   bool _screenReaderSpeaking = false;
+
+  /// El micrófono está en pausa porque habla la voz del teléfono (avisos).
+  bool _micPausedForNotice = false;
   StreamSubscription<bool>? _screenReaderSpeech;
   Timer? _screenReaderTail;
 
@@ -976,6 +1089,9 @@ class LiveController extends Notifier<LiveUiState> {
     _turnAllowed = false;
     _meetingConfirmTurn = false;
     _leaveMeetingRequested = false;
+    _meetingRequested = false;
+    _sosHeard.clear();
+    _sosCalled = false;
     // Lo que alcanzó a decir en esta sesión se registra aquí: si no, se pegaría
     // al primer turno de la sesión siguiente.
     _logAssistantSaid(' (cortado al cerrar la sesión)');
@@ -1504,6 +1620,20 @@ class LiveController extends Notifier<LiveUiState> {
         if (_onSpeaker && _assistantActive) return;
         // Ni mientras habla TalkBack: su voz no es la persona (HU-023).
         if (_onSpeaker && _screenReaderSpeaking) return;
+        // Ni mientras suena un aviso del teléfono: en la prueba del 21-oct el
+        // asistente oyó "Modo reunión. Te escucho en silencio…" como si lo
+        // dijera la persona.
+        if (_onSpeaker && ref.read(announcerSpeakingProvider).value) {
+          if (!_micPausedForNotice) {
+            _micPausedForNotice = true;
+            _log('[Lazarus] mic: en pausa mientras habla el teléfono');
+          }
+          return;
+        }
+        if (_micPausedForNotice) {
+          _micPausedForNotice = false;
+          _log('[Lazarus] mic: terminó el aviso del teléfono → reabierto');
+        }
         _trackVoice(pcm);
         _micChunks++;
         if (_micChunks == 1) _log('[Lazarus] mic: primer chunk enviado');
@@ -1571,6 +1701,10 @@ class LiveController extends Notifier<LiveUiState> {
     if (_sosByGesture &&
         ref.read(sosControllerProvider) == SosStatus.awaitingConfirmation) {
       _cancelGestureSos();
+      return;
+    }
+    if (ref.read(sosControllerProvider) == SosStatus.awaitingConfirmation) {
+      _cancelVoiceSos();
       return;
     }
     if (state.micMuted) {
@@ -1673,6 +1807,10 @@ class LiveController extends Notifier<LiveUiState> {
         ref.read(sosControllerProvider.notifier).personSpoke();
         if (asksTotalSilence(_recentHeard())) _silenceRequested = true;
         _userTurnHeard.write(t.text);
+        _sosHeard.write(t.text);
+        if (!state.meetingMode && asksMeetingMode(_recentHeard())) {
+          _meetingRequested = true;
+        }
         final describing = asksDescriptions(_recentHeard());
         if (describing != null) _describingRequested = describing;
         if (state.meetingMode &&
@@ -1727,6 +1865,8 @@ class LiveController extends Notifier<LiveUiState> {
           _endMeetingTurn() ? ' (descartado: modo reunión)' : ' (interrumpido)',
         );
         _log('[Lazarus] INTERRUMPIDO (barge-in: el usuario habló encima)');
+        // La pregunta del SOS cortada a medias no cuenta como oída.
+        _sosQuestionHeard = false;
         _telemetry.event('interrupted');
         _assistantActive = false;
         _assistantTurnDone = false;
@@ -1746,6 +1886,8 @@ class LiveController extends Notifier<LiveUiState> {
         _applyRequestedSilence();
         _applyRequestedDescriptions();
         _applyRequestedMeetingExit();
+        _applyRequestedMeeting();
+        _applyRequestedSos();
         // El asistente terminó de generar; el audio aún puede estar drenando.
         // El mic se reabrirá cuando la cola se vacíe (onDrained). Si el
         // drenado llegó primero (respuesta corta), reabre ya mismo.
@@ -1779,6 +1921,9 @@ class LiveController extends Notifier<LiveUiState> {
   /// Reproduce un fragmento de audio del asistente (en altavoz cierra el mic).
   void _playAssistantAudio(String pcm) {
     _audioInChunks++;
+    if (ref.read(sosControllerProvider) == SosStatus.awaitingConfirmation) {
+      _sosQuestionHeard = true;
+    }
     if (_afterSpeech.isNotEmpty) _afterSpeechHeard = true;
     if (_audioInChunks == 1) {
       _log(
@@ -1803,6 +1948,8 @@ class LiveController extends Notifier<LiveUiState> {
         _telemetry.voiceToVoice(ms);
       }
       _wordSinceReply = false;
+      // La voz que ya tuvo respuesta no cuenta para la siguiente.
+      _lastVoiceAt = null;
       // Mientras habla, la persona no puede contestar a "¿Envío la alerta…?".
       ref.read(sosControllerProvider.notifier).assistantSpeaking();
     }
@@ -2151,6 +2298,53 @@ class LiveController extends Notifier<LiveUiState> {
     _whenAssistantFinishes(_syncCameraSession);
   }
 
+  /// Red de seguridad de "voy a estar en una reunión": el asistente terminó el
+  /// turno sin llamar a `set_meeting_mode`, así que la app entra en el modo
+  /// igual y lo confirma con la voz del teléfono.
+  void _applyRequestedMeeting() {
+    if (!_meetingRequested) return;
+    _meetingRequested = false;
+    if (state.meetingMode || state.micMuted) return;
+    _log(
+      '[Lazarus] modo reunión activado por la app (el asistente no llamó a set_meeting_mode)',
+    );
+    state = state.copyWith(meetingMode: true);
+    _turnAllowed = false;
+    _afterAssistantAudio(() {
+      if (state.meetingMode) _announce(LiveNotice.meetingOn);
+    });
+  }
+
+  /// Red de seguridad del SOS: la persona dijo "SOS" y el asistente cerró el
+  /// turno sin llamar a `trigger_sos` (prueba del 21-oct). La app sigue con el
+  /// SOS del gesto: pregunta con la voz del teléfono y, sin respuesta, la envía.
+  void _applyRequestedSos() {
+    final heard = _sosHeard.toString();
+    final called = _sosCalled;
+    _sosHeard.clear();
+    _sosCalled = false;
+    if (called || !asksSos(heard, name: _settings.getAssistantName())) return;
+    if (ref.read(sosControllerProvider) != SosStatus.idle) return;
+    _log(
+      '[Lazarus] SOS iniciado por la app (el asistente no llamó a trigger_sos)',
+    );
+    _afterAssistantAudio(() {
+      if (ref.mounted && ref.read(sosControllerProvider) == SosStatus.idle) {
+        unawaited(onSosGesture());
+      }
+    });
+  }
+
+  /// Al terminar el turno: si el audio del asistente sigue sonando, espera a
+  /// que termine; si no sonó nada, actúa ya.
+  void _afterAssistantAudio(void Function() action) {
+    if (_assistantActive) {
+      _whenAssistantFinishes(action);
+    } else {
+      action();
+    }
+  }
+
   /// Red de seguridad de "deja de describir" / "vuelve a describir": el
   /// asistente respondió sin llamar a `set_descriptions`, así que la app guarda
   /// el ajuste igual (persiste para la próxima sesión).
@@ -2234,8 +2428,51 @@ class LiveController extends Notifier<LiveUiState> {
 
   /// La alerta se envió sola (nadie respondió a la confirmación): el asistente
   /// lo dice; si la sesión ya no está, lo dice la voz del teléfono.
+  /// La cuenta del SOS por voz arranca cuando la persona oyó la pregunta. En la
+  /// prueba del 21-oct un ruido cortó "¿Envío la…" antes de que sonara y la
+  /// alerta salió sin que se oyera: si no sonó entera, la pregunta la hace la
+  /// voz del teléfono y la cuenta espera a que termine.
+  void _startSosCountdown() {
+    if (!ref.mounted) return;
+    final sos = ref.read(sosControllerProvider.notifier);
+    if (ref.read(sosControllerProvider) != SosStatus.awaitingConfirmation) {
+      return;
+    }
+    if (_sosQuestionHeard) {
+      sos.startCountdown(_onSosAutoSent);
+      return;
+    }
+    _log('[Lazarus] SOS: la pregunta no sonó; la hace el teléfono');
+    _announceText(
+      noticeText(
+        LiveNotice.sosVoiceConfirm,
+        state.language,
+        name: sos.contactName() ?? '',
+      ),
+    );
+    Future.delayed(ref.read(sosQuestionRepeatDelayProvider), () {
+      if (ref.mounted) sos.startCountdown(_onSosAutoSent);
+    });
+  }
+
+  /// Un toque cancela la alerta por voz que espera confirmación: el asistente
+  /// recibe el resultado para no volver a preguntar.
+  void _cancelVoiceSos() {
+    final result = ref.read(sosControllerProvider.notifier).cancel();
+    _announce(LiveNotice.sosCancelled);
+    if (_session.connected) {
+      _session.sendSosResult(
+        '$result The person cancelled it with a tap and the phone already '
+        'said "Alerta cancelada": do not repeat it.',
+      );
+    }
+  }
+
   void _onSosAutoSent(String result) {
     if (!ref.mounted) return;
+    // La respuesta que sigue no es a algo que dijo la persona: no cuenta para
+    // la latencia (prueba del 21-oct: midió 26 s, la espera de la alerta).
+    _wordSinceReply = false;
     if (_session.connected && state.status == LiveStatus.connected) {
       _turnAllowed = true; // debe sonar aunque esté en modo reunión
       _expectReply();
@@ -2337,6 +2574,7 @@ class LiveController extends Notifier<LiveUiState> {
         case 'set_meeting_mode':
           meetingMode = call.args['enabled'] == true;
           _leaveMeetingRequested = false;
+          _meetingRequested = false;
         case 'set_microphone':
           micActive = call.args['active'] != false;
           _silenceRequested = false;
@@ -2392,6 +2630,8 @@ class LiveController extends Notifier<LiveUiState> {
                 .then((r) => results[call.id] = r),
           );
         case 'trigger_sos':
+          _sosCalled = true;
+          _sosQuestionHeard = false;
           // La pregunta de confirmación y el resultado deben sonar siempre.
           _allowTurn('alerta SOS');
           waits.add(
@@ -2400,13 +2640,12 @@ class LiveController extends Notifier<LiveUiState> {
               results[call.id] = r;
               if (ref.read(sosControllerProvider) ==
                   SosStatus.awaitingConfirmation) {
-                _whenAssistantFinishes(
-                  () => sos.startCountdown(_onSosAutoSent),
-                );
+                _whenAssistantFinishes(_startSosCountdown);
               }
             }),
           );
         case 'cancel_sos':
+          _sosCalled = true;
           results[call.id] = sos.cancel();
         case 'call_phone':
           final to = call.args['to'] == 'emergency'

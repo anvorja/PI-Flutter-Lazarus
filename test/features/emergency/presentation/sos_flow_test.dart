@@ -20,6 +20,7 @@ void main() {
   final t0 = DateTime(2026, 9, 30, 9);
   const window = Duration(milliseconds: 20); // cuenta de la confirmación
   const fallback = Duration(milliseconds: 60); // si la pregunta no suena
+  const repeat = Duration(milliseconds: 30); // la repite el teléfono
   const laura = EmergencyContact(name: 'Laura', phone: '+573151234567');
 
   late FakeLiveSessionRepository session;
@@ -125,6 +126,7 @@ void main() {
         emergencyRepositoryProvider.overrideWithValue(emergency),
         sosConfirmationWindowProvider.overrideWithValue(window),
         sosQuestionFallbackProvider.overrideWithValue(fallback),
+        sosQuestionRepeatDelayProvider.overrideWithValue(repeat),
         sosMaxWaitProvider.overrideWithValue(window * 4),
         sosAnswerWindowProvider.overrideWithValue(window * 2),
         announcerProvider.overrideWithValue((m, _) => announcements.add(m)),
@@ -222,13 +224,65 @@ void main() {
       expect(session.sosResults.single, contains('without a location'));
     });
 
-    test('si la pregunta no llega a sonar, la cuenta arranca igual', () async {
+    test('si la pregunta no llega a sonar, la hace el teléfono y la cuenta '
+        'arranca después (prueba del 21-oct)', () async {
       emergency.contact = laura;
       await tool('trigger_sos');
       await wait(fallback ~/ 2);
       expect(emergency.sms, isEmpty);
-      await wait(fallback + window * 2);
+      await wait(fallback);
+      expect(
+        announcements.last,
+        noticeText(LiveNotice.sosVoiceConfirm, 'es', name: 'Laura'),
+      );
+      expect(emergency.sms, isEmpty, reason: 'espera a que termine');
+      await wait(repeat + window * 3);
       expect(emergency.sms, hasLength(1));
+    });
+
+    test('si un ruido corta la pregunta, la repite el teléfono antes de la '
+        'cuenta (prueba del 21-oct)', () async {
+      emergency.contact = laura;
+      await tool('trigger_sos');
+      await assistantStarts(); // "¿Envío la…"
+      session.emitResponse(
+        const LiveResponse(type: LiveResponseType.interrupted),
+      );
+      await settle();
+      await assistantEnds();
+      await wait(fallback + const Duration(milliseconds: 5));
+      expect(
+        announcements.last,
+        noticeText(LiveNotice.sosVoiceConfirm, 'es', name: 'Laura'),
+      );
+      await wait(window * 2);
+      expect(emergency.sms, isEmpty, reason: 'la cuenta aún no empezó');
+      await wait(repeat + window * 2);
+      expect(emergency.sms, hasLength(1));
+    });
+
+    test('si la pregunta sonó entera, el teléfono no la repite', () async {
+      emergency.contact = laura;
+      await tool('trigger_sos');
+      await assistantSpeaks();
+      expect(
+        announcements,
+        isNot(
+          contains(noticeText(LiveNotice.sosVoiceConfirm, 'es', name: 'Laura')),
+        ),
+      );
+    });
+
+    test('un toque cancela la alerta por voz pendiente', () async {
+      emergency.contact = laura;
+      await tool('trigger_sos');
+      await assistantSpeaks();
+      live().onTap();
+      await settle();
+      await wait(fallback + window * 3);
+      expect(emergency.sms, isEmpty);
+      expect(announcements.last, noticeText(LiveNotice.sosCancelled, 'es'));
+      expect(session.sosResults.single, startsWith('cancelled'));
     });
 
     test(

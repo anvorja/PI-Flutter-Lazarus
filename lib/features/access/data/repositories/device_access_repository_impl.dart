@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../../core/config/app_config.dart';
 import '../../../../core/debug/field_evidence.dart';
+import '../../../../core/debug/live_debug.dart';
 import '../../domain/repositories/device_access_repository.dart';
 import 'log_chunks.dart';
 
@@ -54,7 +55,8 @@ class DeviceAccessRepositoryImpl implements DeviceAccessRepository {
       final body = await _send('GET', '/api/v1/devices/me', token: token);
       return (jsonDecode(body!) as Map<String, dynamic>)['upload_requested'] ==
           true;
-    } on Object {
+    } on Object catch (e) {
+      await _forgetIfUnknown(e);
       return false;
     }
   }
@@ -62,7 +64,11 @@ class DeviceAccessRepositoryImpl implements DeviceAccessRepository {
   @override
   Future<int> uploadLogs() async {
     final token = _prefs.getString(deviceTokenKey);
-    if (token == null || !kFieldEvidence) return 0;
+    if (!kFieldEvidence) return 0;
+    if (token == null) {
+      liveLog('[Lazarus] logs: el teléfono no está registrado, no se suben');
+      return 0;
+    }
     try {
       final dir = await evidenceDirectory();
       final offsets = {
@@ -76,9 +82,25 @@ class DeviceAccessRepositoryImpl implements DeviceAccessRepository {
         await _prefs.setInt('$_offsetPrefix${chunk.name}', chunk.endOffset);
       }
       return chunks.length;
-    } on Object {
+    } on Object catch (e) {
+      // Sin la URL ni el token: solo el tipo de fallo (prueba del 21-oct: las
+      // subidas no quedaban en el registro y no se sabía por qué).
+      final why = e is HttpException ? e.message : e.runtimeType.toString();
+      liveLog('[Lazarus] logs: no se subieron ($why); se reintenta después');
+      await _forgetIfUnknown(e);
       return 0; // se reintenta en la próxima: los offsets no avanzaron
     }
+  }
+
+  /// El backend ya no conoce el token (prueba del 21-oct: HTTP 401 al subir,
+  /// p. ej. porque el teléfono se eliminó en el panel). Se olvida, y la próxima
+  /// sesión registra el teléfono de nuevo, pendiente de aprobación.
+  Future<void> _forgetIfUnknown(Object error) async {
+    if (error is! HttpException || error.message != 'HTTP 401') return;
+    await _prefs.remove(deviceTokenKey);
+    liveLog(
+      '[Lazarus] el panel no conoce este teléfono: se registra de nuevo en la próxima sesión',
+    );
   }
 
   Future<Map<String, String>> _deviceInfo() async {
