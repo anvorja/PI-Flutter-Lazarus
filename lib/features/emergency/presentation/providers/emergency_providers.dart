@@ -19,6 +19,13 @@ final sosConfirmationWindowProvider = Provider<Duration>(
   (ref) => const Duration(seconds: 5),
 );
 
+/// Lo que tarda la voz del teléfono en repetir "¿Envío la alerta…?" cuando la
+/// pregunta del asistente no sonó: la cuenta de [sosConfirmationWindowProvider]
+/// empieza después.
+final sosQuestionRepeatDelayProvider = Provider<Duration>(
+  (ref) => const Duration(seconds: 7),
+);
+
 /// Si la persona habla durante la cuenta, cuánto se espera a que el asistente
 /// decida (sí, no) antes de enviarla sola.
 final sosAnswerWindowProvider = Provider<Duration>(

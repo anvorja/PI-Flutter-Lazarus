@@ -95,6 +95,35 @@ void main() {
     },
   );
 
+  test('una frase dicha en voz baja no mide desde la frase anterior '
+      '(prueba del 21-oct: "Bruno" midió 18 s)', () async {
+    emit(
+      LiveResponseType.inputTranscription,
+      LiveTranscription(text: '¿Dónde estoy?', finished: true),
+    );
+    for (var i = 0; i < 3; i++) {
+      media.onMicChunk!(pcm(loud: true));
+    }
+    emit(LiveResponseType.audio, 'AAAA');
+    emit(LiveResponseType.turnComplete);
+    await settle();
+    media.onDrained!();
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+
+    // "Brújula" en voz baja: el micrófono no la marca como voz.
+    emit(
+      LiveResponseType.inputTranscription,
+      LiveTranscription(text: ' Bruno.', finished: true),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+    emit(LiveResponseType.audio, 'BBBB');
+    await settle();
+
+    final latencies = events.where((e) => e['event'] == 'latency').toList();
+    expect(latencies, hasLength(2));
+    expect(latencies.last['ms'] as int, lessThan(250));
+  });
+
   test('un ruido suelto no cuenta como voz', () async {
     media.onMicChunk!(pcm(loud: true));
     media.onMicChunk!(pcm(loud: false));
@@ -141,6 +170,8 @@ void main() {
     final loud = word.add(const Duration(milliseconds: 600));
     expect(endOfSpeech(loud, word), loud);
     expect(endOfSpeech(null, word), word);
+    // Voz fuerte de hace más de 3 s: es de otra frase, no de esta.
+    expect(endOfSpeech(word.subtract(const Duration(seconds: 14)), word), word);
     expect(isSpokenWords(' Sigo derecho.'), isTrue);
     expect(isSpokenWords(' देम देम'), isFalse);
   });
