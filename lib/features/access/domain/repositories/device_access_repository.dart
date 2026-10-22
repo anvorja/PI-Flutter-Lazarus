@@ -1,5 +1,5 @@
 /// Acceso del teléfono al piloto (HU-044 y HU-045): el registro en el panel,
-/// su estado y la subida de los logs de campo.
+/// su estado, la subida de los logs de campo y los perfiles de ruta (HU-022).
 library;
 
 abstract class DeviceAccessRepository {
@@ -16,4 +16,8 @@ abstract class DeviceAccessRepository {
   /// Sube lo nuevo de cada archivo de evidencia desde la última subida.
   /// Devuelve cuántos archivos subió (0 si no había nada o falló).
   Future<int> uploadLogs();
+
+  /// Perfiles de ruta curados en JSON (HU-022). Sin red, los últimos que se
+  /// descargaron; `null` si nunca se descargó ninguno.
+  Future<String?> routeProfiles();
 }

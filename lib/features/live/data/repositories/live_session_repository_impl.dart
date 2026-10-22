@@ -131,6 +131,9 @@ class LiveSessionRepositoryImpl implements LiveSessionRepository {
   void sendRouteNotice(String notice) => _client?.sendRouteNotice(notice);
 
   @override
+  void sendRouteGuide(String message) => _client?.sendRouteGuide(message);
+
+  @override
   void sendCameraPaused() => _client?.sendCameraPaused();
 
   @override

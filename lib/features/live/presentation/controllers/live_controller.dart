@@ -26,7 +26,10 @@ import '../../../emergency/presentation/controllers/sos_controller.dart';
 import '../../../emergency/presentation/providers/emergency_providers.dart';
 import '../../../field_notes/domain/entities/field_note.dart';
 import '../../../field_notes/presentation/providers/field_notes_providers.dart';
+import '../../../location/domain/entities/location_fix.dart';
 import '../../../location/presentation/providers/location_providers.dart';
+import '../../../routes/domain/route_guide.dart';
+import '../../../routes/domain/route_profile.dart';
 import '../../../routes/domain/unicentro_schedule.dart';
 import '../../../routes/presentation/providers/routes_providers.dart';
 import '../providers/live_providers.dart';
@@ -979,6 +982,12 @@ class LiveController extends Notifier<LiveUiState> {
   bool _routeAOffered = false;
   Timer? _routeAWatch;
 
+  /// Perfiles de ruta curados descargados al iniciar (HU-022) y la guía de la
+  /// ruta activa, que avanza con el GPS cada [routeCheckInterval].
+  List<RouteProfile> _routes = const [];
+  RouteGuide? _routeGuide;
+  Timer? _routeWatch;
+
   /// Ya se consultó si el panel pidió los logs en esta sesión (HU-045).
   bool _uploadChecked = false;
 
@@ -1081,6 +1090,7 @@ class LiveController extends Notifier<LiveUiState> {
   void _teardown() {
     _routeAWatch?.cancel();
     _routeAWatch = null;
+    _stopRouteGuide();
     _cameraSwitch?.cancel();
     _cameraSwitch = null;
     _stopObserving();
@@ -1746,6 +1756,7 @@ class LiveController extends Notifier<LiveUiState> {
         if (!_uploadChecked) {
           _uploadChecked = true;
           unawaited(_uploadLogsIfRequested());
+          unawaited(_loadRoutes());
         }
         state = state.copyWith(status: LiveStatus.connected);
         _telemetry.event('session_start', {
@@ -2243,6 +2254,94 @@ class LiveController extends Notifier<LiveUiState> {
     _session.sendRouteNotice(notice);
   }
 
+  /// Descarga los perfiles de ruta (o usa los guardados, sin datos).
+  Future<void> _loadRoutes() async {
+    final body = await ref.read(deviceAccessRepositoryProvider).routeProfiles();
+    if (body == null || !ref.mounted) return;
+    try {
+      _routes = RouteProfile.listFromJson(body);
+    } on Object {
+      return;
+    }
+    _log('[Lazarus] ruta: ${_routes.length} perfiles disponibles');
+  }
+
+  /// Respuesta de `start_route` (HU-022): elige el perfil que empieza cerca.
+  String _startRoute(String destination) {
+    final location = ref.read(locationControllerProvider);
+    final fix = location.fix;
+    if (fix == null || location.reliability != GpsReliability.reliable) {
+      _log('[Lazarus] ruta: no se inicia, GPS no confiable');
+      return 'no_gps: the GPS is not reliable right now, so the route cannot '
+          'start. Tell the person in one short sentence and suggest trying '
+          'again in the open in a moment.';
+    }
+    final route = pickRoute(_routes, fix, destination);
+    if (route == null) {
+      _log(
+        '[Lazarus] ruta: ningún perfil empieza cerca (${_routes.length} cargados)',
+      );
+      return 'none: there is no curated route loaded that starts near here. '
+          'Tell the person in one sentence and keep NO ROUTES.';
+    }
+    _stopRouteGuide();
+    _routeGuide = RouteGuide(route);
+    _routeWatch = Timer.periodic(routeCheckInterval, (_) => checkRoute());
+    _log(
+      '[Lazarus] ruta: iniciada "${route.slug}" (${route.points.length} puntos, '
+      '${route.validatedInField ? "validada" : "sin validar"})',
+    );
+    final warning = route.validatedInField
+        ? ''
+        : 'not validated: it is a test route; tell the person it must only be '
+              'used with a companion. ';
+    return "ok: guiding along '${route.name}', from ${route.origin} to "
+        '${route.destination}, ${route.points.length} points. $warning'
+        "The app will send '[RUTA]' at each point: do not describe the route "
+        'yourself.';
+  }
+
+  void _stopRouteGuide() {
+    _routeWatch?.cancel();
+    _routeWatch = null;
+    _routeGuide = null;
+  }
+
+  /// Avanza la ruta activa con la última posición y, si llegó o se acerca a un
+  /// punto, se lo pasa al asistente (HU-022). En modo reunión solo pasan los
+  /// cruces y los riesgos altos.
+  @visibleForTesting
+  void checkRoute() {
+    final guide = _routeGuide;
+    if (guide == null || !ref.mounted || !_session.connected) return;
+    final location = ref.read(locationControllerProvider);
+    final fix = location.fix;
+    if (fix == null) return;
+    final event = guide.update(fix, location.reliability);
+    if (event == null) return;
+    final message = describeRouteEvent(
+      event,
+      fix,
+      (p) => ref
+          .read(locationControllerProvider.notifier)
+          .clockHourTowards(p.latitude, p.longitude),
+    );
+    if (guide.finished) _stopRouteGuide();
+    final point = event.point;
+    if (state.meetingMode &&
+        point.crossing == null &&
+        point.risk != RouteRisk.high) {
+      _log('[Lazarus] ruta (en modo reunión, no se dice): $message');
+      return;
+    }
+    _log('[Lazarus] ruta: $message');
+    _afterAssistantAudio(() {
+      if (!ref.mounted || !_session.connected) return;
+      _expectReply();
+      _session.sendRouteGuide(message);
+    });
+  }
+
   /// Guarda una nota de campo con la hora y la última posición conocida, y
   /// devuelve la respuesta para el asistente (HU-024, criterio 3).
   Future<String> _addFieldNote(String raw) async {
@@ -2616,6 +2715,17 @@ class LiveController extends Notifier<LiveUiState> {
               call.args['active'] == true,
             ).then((r) => results[call.id] = r),
           );
+        case 'start_route':
+          results[call.id] = _startRoute(
+            (call.args['destination'] ?? '').toString(),
+          );
+        case 'stop_route':
+          final had = _routeGuide != null;
+          _stopRouteGuide();
+          if (had) _log('[Lazarus] ruta: detenida a pedido de la persona');
+          results[call.id] = had
+              ? 'ok: route guidance stopped. Confirm it in one short sentence.'
+              : 'ok: there was no active route.';
         case 'get_time':
           final time = describeLocalTime(ref.read(liveClockProvider)());
           _log('[Lazarus] hora para el asistente: $time');

@@ -1,0 +1,339 @@
+/// HU-022 (y HU-018 para esta ruta): guía por un perfil de ruta curado. Las
+/// coordenadas son ficticias (cerca de 0,0): las reales viven en el backend.
+library;
+
+import 'dart:convert';
+
+import 'package:app/features/access/presentation/providers/access_providers.dart';
+import 'package:app/features/live/domain/entities/live_message.dart';
+import 'package:app/features/live/presentation/controllers/live_controller.dart';
+import 'package:app/features/live/presentation/providers/live_providers.dart';
+import 'package:app/features/location/domain/entities/location_fix.dart';
+import 'package:app/features/location/presentation/providers/location_providers.dart';
+import 'package:app/features/routes/domain/route_guide.dart';
+import 'package:app/features/routes/domain/route_profile.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../../support/fakes.dart';
+
+/// Unos 100 m hacia el norte.
+const double _step = 0.0009;
+
+Map<String, Object?> _profileJson({
+  String slug = 'estacion-prueba-ida',
+  String destination = 'Entrada',
+  double startLat = 0,
+  bool validated = false,
+}) => {
+  'slug': slug,
+  'name': 'Estación de prueba → $destination',
+  'origin': 'Estación de prueba',
+  'destination': destination,
+  'direction': 'outbound',
+  'family': 'A',
+  'validated_in_field': validated,
+  'points': [
+    {
+      'name': 'Torniquetes',
+      'lat': startLat,
+      'lon': 0,
+      'instruction': 'Sal por la rampa con barandas',
+    },
+    {'name': 'Árbol grande', 'lat': startLat + _step, 'lon': 0},
+    {
+      'name': 'Cebra',
+      'lat': startLat + 2 * _step,
+      'lon': 0,
+      'risk': 'high',
+      'crossing': 'zebra',
+      'instruction': 'Cruza por la cebra hacia la portería',
+    },
+    {'name': destination, 'lat': startLat + 3 * _step, 'lon': 0},
+  ],
+};
+
+LocationFix _at(double lat, {double accuracy = 5, DateTime? at}) => LocationFix(
+  latitude: lat,
+  longitude: 0,
+  accuracyM: accuracy,
+  at: at ?? DateTime(2026, 10, 24, 9),
+);
+
+void main() {
+  final profile = RouteProfile.fromJson(_profileJson());
+  const ok = GpsReliability.reliable;
+
+  group('avance por el perfil', () {
+    test('en el primer punto da su indicación y el siguiente', () {
+      final guide = RouteGuide(profile);
+      final event = guide.update(_at(0), ok)!;
+      expect(event.kind, RouteEventKind.arrived);
+      final message = describeRouteEvent(event, _at(0), (_) => 2);
+      expect(message, startsWith("reached point 1 of 4: 'Torniquetes'."));
+      expect(message, contains("Instruction: 'Sal por la rampa con barandas'"));
+      expect(message, contains("Next: 'Árbol grande', about 135 steps at 2"));
+    });
+
+    test('avisa una vez al acercarse y luego al llegar', () {
+      final guide = RouteGuide(profile)..update(_at(0), ok);
+      expect(guide.update(_at(_step * 0.2), ok), isNull);
+      final near = guide.update(_at(_step * 0.5), ok)!;
+      expect(near.kind, RouteEventKind.approaching);
+      expect(near.point.name, 'Árbol grande');
+      expect(guide.update(_at(_step * 0.6), ok), isNull); // no se repite
+      final arrived = guide.update(_at(_step), ok)!;
+      expect(arrived.kind, RouteEventKind.arrived);
+      expect(arrived.index, 1);
+    });
+
+    test('sin GPS confiable no hay avisos (HU-018, regla 4)', () {
+      final guide = RouteGuide(profile);
+      expect(guide.update(_at(0), GpsReliability.unreliable), isNull);
+      expect(guide.update(_at(0), GpsReliability.unknown), isNull);
+      expect(guide.update(_at(0), ok)!.kind, RouteEventKind.arrived);
+    });
+
+    test('un punto que se pasó sin señal no detiene la guía', () {
+      final guide = RouteGuide(profile)..update(_at(0), ok);
+      final event = guide.update(_at(2 * _step), ok)!;
+      expect(event.index, 2);
+      final message = describeRouteEvent(event, _at(2 * _step), (_) => null);
+      expect(message, contains('crossing: zebra crossing. risk: high.'));
+      expect(message, contains("Next: 'Entrada', about 135 steps."));
+    });
+
+    test('al último punto la ruta termina', () {
+      final guide = RouteGuide(profile)
+        ..update(_at(0), ok)
+        ..update(_at(_step), ok)
+        ..update(_at(2 * _step), ok);
+      final end = guide.update(_at(3 * _step), ok)!;
+      expect(end.kind, RouteEventKind.finished);
+      expect(guide.finished, isTrue);
+      expect(
+        describeRouteEvent(end, _at(3 * _step), (_) => 12),
+        contains('finished'),
+      );
+      expect(guide.update(_at(3 * _step), ok), isNull);
+    });
+
+    test('si el siguiente punto ya está cerca, no se anuncia dos veces', () {
+      final close = RouteProfile.fromJson({
+        ..._profileJson(),
+        'points': [
+          {'name': 'A', 'lat': 0, 'lon': 0},
+          {'name': 'B', 'lat': 0.0003, 'lon': 0}, // ~33 m
+          {'name': 'C', 'lat': 0.0006, 'lon': 0},
+        ],
+      });
+      final guide = RouteGuide(close)..update(_at(0), ok);
+      expect(guide.update(_at(0.0001), ok), isNull);
+      expect(guide.update(_at(0.0003), ok)!.kind, RouteEventKind.arrived);
+    });
+  });
+
+  group('elegir el perfil', () {
+    final other = RouteProfile.fromJson(
+      _profileJson(
+        slug: 'estacion-prueba-biblioteca',
+        destination: 'Biblioteca',
+      ),
+    );
+    final far = RouteProfile.fromJson(
+      _profileJson(slug: 'otra-estacion', startLat: 0.01), // ~1,1 km
+    );
+
+    test('el que empieza cerca, y el del destino que dijo', () {
+      final routes = [far, other, profile];
+      expect(pickRoute(routes, _at(0), '')!.slug, 'estacion-prueba-biblioteca');
+      expect(
+        pickRoute(routes, _at(0), 'a la entrada')!.slug,
+        'estacion-prueba-ida',
+      );
+      expect(
+        pickRoute(routes, _at(0), 'a la biblioteca')!.slug,
+        'estacion-prueba-biblioteca',
+      );
+      expect(pickRoute([far], _at(0), ''), isNull);
+    });
+
+    test('un perfil mal formado se descarta', () {
+      final body = jsonEncode([
+        _profileJson(),
+        {'slug': 'roto'},
+      ]);
+      expect(
+        RouteProfile.listFromJson(body).single.slug,
+        'estacion-prueba-ida',
+      );
+      expect(RouteProfile.listFromJson('{}'), isEmpty);
+    });
+
+    test('pasos aproximados', () {
+      expect(stepsFor(1), 5);
+      expect(stepsFor(100), 135);
+    });
+  });
+
+  group('en la sesión', () {
+    late FakeLiveSessionRepository session;
+    late FakeLocationRepository gps;
+    late FakeDeviceAccess access;
+    late List<String> logs;
+    late ProviderContainer container;
+    final t0 = DateTime(2026, 10, 24, 9);
+
+    Future<void> settle() =>
+        Future<void>.delayed(const Duration(milliseconds: 10));
+
+    Future<String> callTool(
+      String name, [
+      Map<String, dynamic> args = const {},
+    ]) async {
+      session.emitResponse(
+        LiveResponse(
+          type: LiveResponseType.toolCall,
+          data: LiveToolCall(
+            functionCalls: [LiveFunctionCall(id: name, name: name, args: args)],
+          ),
+        ),
+      );
+      await settle();
+      return session.toolResponses.last.result;
+    }
+
+    /// Posiciones buenas durante 6 s: el GPS pasa a confiable (HU-013).
+    Future<void> reliableAt(double lat) async {
+      for (final s in [0, 3, 6]) {
+        gps.fixes.add(_at(lat, at: t0.add(Duration(seconds: s))));
+      }
+      await settle();
+    }
+
+    LiveController live() => container.read(liveControllerProvider.notifier);
+
+    setUp(() async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      session = FakeLiveSessionRepository();
+      gps = FakeLocationRepository();
+      access = FakeDeviceAccess()..routes = jsonEncode([_profileJson()]);
+      logs = [];
+      final original = debugPrint;
+      debugPrint = (message, {wrapWidth}) => logs.add(message ?? '');
+      addTearDown(() => debugPrint = original);
+      container = ProviderContainer(
+        overrides: [
+          sharedPreferencesProvider.overrideWithValue(prefs),
+          liveSessionRepositoryProvider.overrideWithValue(session),
+          networkStatusRepositoryProvider.overrideWithValue(
+            FakeNetworkStatus(),
+          ),
+          mediaRepositoryProvider.overrideWithValue(FakeMediaRepository()),
+          backgroundSessionRepositoryProvider.overrideWithValue(
+            FakeBackgroundSession(),
+          ),
+          compassRepositoryProvider.overrideWithValue(FakeCompassRepository()),
+          locationRepositoryProvider.overrideWithValue(gps),
+          trackRecorderProvider.overrideWithValue(FakeTrackRecorder()),
+          deviceAccessRepositoryProvider.overrideWithValue(access),
+          screenAwakeProvider.overrideWithValue((_) async {}),
+          liveClockProvider.overrideWithValue(() => t0),
+          announcerProvider.overrideWithValue((_, _) {}),
+          announcerStopProvider.overrideWithValue(() {}),
+          retryDelayProvider.overrideWithValue((_) => Duration.zero),
+        ],
+      );
+      addTearDown(container.dispose);
+    });
+
+    /// Abre la sesión: al conectar se descargan los perfiles.
+    Future<void> connect() async {
+      live().onTap();
+      await settle();
+      session.emitSetupComplete();
+      await settle();
+    }
+
+    test(
+      'start_route elige el perfil, advierte que no está validado y guía',
+      () async {
+        await connect();
+        expect(logs, contains('[Lazarus] ruta: 1 perfiles disponibles'));
+        await reliableAt(0);
+        final result = await callTool('start_route', {
+          'destination': 'la entrada',
+        });
+        expect(
+          result,
+          startsWith("ok: guiding along 'Estación de prueba → Entrada'"),
+        );
+        expect(result, contains('not validated'));
+
+        live().checkRoute();
+        await settle();
+        expect(
+          session.routeGuides.single,
+          startsWith("reached point 1 of 4: 'Torniquetes'"),
+        );
+        live().checkRoute(); // misma posición: nada nuevo
+        expect(session.routeGuides, hasLength(1));
+
+        gps.fixes.add(_at(_step, at: t0.add(const Duration(seconds: 9))));
+        await settle();
+        live().checkRoute();
+        await settle();
+        expect(
+          session.routeGuides.last,
+          startsWith("reached point 2 of 4: 'Árbol grande'"),
+        );
+      },
+    );
+
+    test('validado en campo no lleva la advertencia', () async {
+      access.routes = jsonEncode([_profileJson(validated: true)]);
+      await connect();
+      await reliableAt(0);
+      expect(await callTool('start_route'), isNot(contains('not validated')));
+    });
+
+    test('sin GPS confiable o lejos de toda ruta no arranca', () async {
+      await connect();
+      expect(await callTool('start_route'), startsWith('no_gps'));
+      await reliableAt(0.05); // ~5,5 km
+      expect(await callTool('start_route'), startsWith('none'));
+    });
+
+    test('stop_route deja de guiar', () async {
+      await connect();
+      await reliableAt(0);
+      await callTool('start_route');
+      expect(
+        await callTool('stop_route'),
+        startsWith('ok: route guidance stopped'),
+      );
+      live().checkRoute();
+      await settle();
+      expect(session.routeGuides, isEmpty);
+      expect(await callTool('stop_route'), 'ok: there was no active route.');
+    });
+
+    test('en modo reunión solo pasan los cruces y los riesgos altos', () async {
+      await connect();
+      await reliableAt(0);
+      await callTool('start_route');
+      await callTool('set_meeting_mode', {'enabled': true});
+      live().checkRoute(); // torniquetes: no se dice
+      await settle();
+      expect(session.routeGuides, isEmpty);
+      gps.fixes.add(_at(2 * _step, at: t0.add(const Duration(seconds: 9))));
+      await settle();
+      live().checkRoute(); // la cebra sí
+      await settle();
+      expect(session.routeGuides.single, contains('crossing: zebra crossing'));
+    });
+  });
+}

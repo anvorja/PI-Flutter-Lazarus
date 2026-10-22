@@ -47,6 +47,10 @@ const String observeRisksTrigger = '[OBSERVA_RIESGOS]';
 /// cerró, seguida del hecho que decidió la app (lo interpreta el system prompt).
 const String routeNoticeTrigger = '[UNICENTRO]';
 
+/// Sentinela de la guía por una ruta curada (HU-022): el punto al que se acerca
+/// o llegó la persona, calculado por la app (lo interpreta el system prompt).
+const String routeGuideTrigger = '[RUTA]';
+
 /// Pantalla bloqueada (HU-017): primer mensaje de la sesión sin imágenes que se
 /// abre al bloquear; el asistente avisa que sigue sin ver (lo interpreta el
 /// system prompt).
@@ -268,6 +272,10 @@ class GeminiLiveClient {
   /// Ruta A desactivada a mitad de la sesión: el asistente lo avisa (HU-019).
   void sendRouteNotice(String notice) =>
       sendText('$routeNoticeTrigger $notice');
+
+  /// Punto de la ruta curada activa (HU-022).
+  void sendRouteGuide(String message) =>
+      sendText('$routeGuideTrigger $message');
 
   /// Pantalla bloqueada: la cámara se detuvo.
   void sendCameraPaused() => sendText(cameraPausedTrigger);
