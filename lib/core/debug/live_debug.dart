@@ -6,10 +6,9 @@ library;
 import 'package:flutter/foundation.dart';
 
 import 'field_evidence.dart';
-import 'file_log.dart';
 
 const bool kLiveDebug = kFieldEvidence;
 
 void liveLog(String message) {
-  if (kLiveDebug) debugPrint(maskPhones(message));
+  if (kLiveDebug) debugPrint(message);
 }
