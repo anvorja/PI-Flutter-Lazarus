@@ -26,9 +26,10 @@ class FileLog {
   final int maxBytes;
   final DateTime Function() _clock;
 
-  /// Anota la línea si es una traza de la app.
+  /// Anota la línea si es una traza de la app, sin números de teléfono.
   void write(String? message) {
     if (message == null || !message.contains('[Lazarus]')) return;
+    message = maskPhones(message);
     try {
       if (_file.existsSync() && _file.lengthSync() > maxBytes) {
         _file.renameSync('${_file.path}.1');
@@ -52,6 +53,15 @@ class FileLog {
     };
   }
 }
+
+/// El archivo se sube al panel (HU-045): un número de teléfono (7 dígitos o
+/// más, con espacios, guiones o `+`) queda como `[número]`. Las coordenadas y
+/// los decimales y las fechas no se tocan.
+final RegExp _phone = RegExp(
+  r'(?<![\w.])(?!\d{4}-\d{2}-\d{2})\+?\d(?:[ -]?\d){6,}(?!\d|\.\d)',
+);
+
+String maskPhones(String message) => message.replaceAll(_phone, '[número]');
 
 /// "10-05 15:01:26.181", el mismo formato de hora que `logcat -v time`.
 String _time(DateTime t) {
