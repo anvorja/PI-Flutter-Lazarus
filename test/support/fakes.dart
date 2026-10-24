@@ -458,9 +458,20 @@ class FakeDeviceAccess implements DeviceAccessRepository {
   @override
   Future<bool> uploadRequested() async => requested;
 
+  /// Si no es `null`, cada subida espera a que se complete (red lenta).
+  Completer<void>? slowNetwork;
+  int uploadsInFlight = 0;
+  int maxUploadsInFlight = 0;
+
   @override
   Future<int> uploadLogs() async {
     uploads++;
+    uploadsInFlight++;
+    if (uploadsInFlight > maxUploadsInFlight) {
+      maxUploadsInFlight = uploadsInFlight;
+    }
+    await slowNetwork?.future;
+    uploadsInFlight--;
     return 1;
   }
 

@@ -111,6 +111,33 @@ void main() {
       expect(notes.notes.single.fix, isNull);
     });
 
+    test('una nota que solo dice "posición" se guarda y pide qué hay ahí '
+        '(jornada del 24-oct)', () async {
+      final result = await addNote({'text': 'Guarda posición.'});
+      expect(result, contains('ask in one short sentence what is at'));
+      expect(notes.notes.single.text, 'Guarda posición.');
+    });
+
+    test('notas que solo marcan el lugar', () {
+      for (final text in [
+        'posición',
+        'Coordenadas',
+        'Posición actual',
+        'Guarde posición',
+        'position',
+      ]) {
+        expect(isPlaceMarkerNote(text), isTrue, reason: text);
+      }
+      for (final text in [
+        'inicio de cruce peatonal',
+        'girar a la derecha',
+        'posición del semáforo dañado',
+        '',
+      ]) {
+        expect(isPlaceMarkerNote(text), isFalse, reason: text);
+      }
+    });
+
     test('una nota vacía no se guarda: pregunta qué anotar', () async {
       final result = await addNote({'text': '  '});
       expect(result, startsWith('error'));

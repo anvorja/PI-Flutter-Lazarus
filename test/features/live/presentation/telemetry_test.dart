@@ -124,6 +124,26 @@ void main() {
     expect(latencies.last['ms'] as int, lessThan(250));
   });
 
+  test(
+    'una sesión nueva no mide desde la voz de la anterior '
+    '(jornada del 24-oct: al bloquear la pantalla midió hasta 56 s)',
+    () async {
+      emit(
+        LiveResponseType.inputTranscription,
+        LiveTranscription(text: 'Anota posición.', finished: true),
+      );
+      for (var i = 0; i < 3; i++) {
+        media.onMicChunk!(pcm(loud: true));
+      }
+      session.emitSetupComplete(); // sesión nueva antes de la respuesta
+      await settle();
+      emit(LiveResponseType.audio, 'AAAA');
+      await settle();
+
+      expect(events.where((e) => e['event'] == 'latency'), isEmpty);
+    },
+  );
+
   test('un ruido suelto no cuenta como voz', () async {
     media.onMicChunk!(pcm(loud: true));
     media.onMicChunk!(pcm(loud: false));

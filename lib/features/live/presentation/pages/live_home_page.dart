@@ -148,7 +148,7 @@ class _LiveHomePageState extends ConsumerState<LiveHomePage> {
                   width: double.infinity,
                   height: stopButtonHeight,
                   child: FilledButton.icon(
-                    onPressed: controller.disconnect,
+                    onPressed: controller.requestStop,
                     style: FilledButton.styleFrom(
                       backgroundColor: stopButtonColor,
                       foregroundColor: Colors.white,

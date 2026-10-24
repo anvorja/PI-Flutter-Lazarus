@@ -184,6 +184,38 @@ String? noteRequestText(String heard) {
   return before.isEmpty ? null : before;
 }
 
+/// La nota solo marca el lugar ("posición", "coordenadas", "guarda posición"):
+/// en la jornada del 24-oct un participante dejó 15 así, sin decir qué había.
+bool isPlaceMarkerNote(String text) {
+  const marker = {
+    'posicion',
+    'coordenadas',
+    'coordenada',
+    'ubicacion',
+    'guarda',
+    'guarde',
+    'guardar',
+    'guardada',
+    'actual',
+    'mi',
+    'la',
+    'esta',
+    'este',
+    'punto',
+    'aqui',
+    'note',
+    'position',
+    'location',
+    'coordinates',
+    'save',
+    'here',
+  };
+  final words = normalizeForMatch(
+    text,
+  ).split(RegExp(r'[^a-z]+')).where((w) => w.isNotEmpty).toList();
+  return words.isNotEmpty && words.every(marker.contains);
+}
+
 /// El asistente dijo que anotó ("Anotado.", "Noted.", "Noté.", "Annotato.").
 bool saysNoted(String said) => RegExp(
   r'\b(anotad[oa]|apuntad[oa]|noted|note|annotato)\b',
@@ -359,6 +391,10 @@ enum LiveNotice {
   permissionBlocked,
   stopped,
 
+  /// Primer toque de Detener (jornada del 24-oct): con TalkBack, un doble toque
+  /// en cualquier parte activa el botón enfocado y la app se detenía sin querer.
+  stopConfirm,
+
   /// Alerta SOS enviada sola con la sesión ya cerrada (no hay asistente que lo
   /// diga).
   sosSent,
@@ -434,6 +470,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
     LiveNotice.permissionBlocked:
         'El permiso de micrófono está desactivado. Toca la pantalla para abrir los ajustes y activarlo.',
     LiveNotice.stopped: 'Asistente detenido.',
+    LiveNotice.stopConfirm:
+        '¿Detener el asistente? Toca el botón otra vez para confirmar.',
     LiveNotice.sosSent:
         'Alerta enviada a tu contacto de emergencia. Detente en un lugar seguro y espera.',
     LiveNotice.sosFailed:
@@ -488,6 +526,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
     LiveNotice.permissionBlocked:
         'Microphone permission is turned off. Tap the screen to open settings and turn it on.',
     LiveNotice.stopped: 'Assistant stopped.',
+    LiveNotice.stopConfirm:
+        'Stop the assistant? Tap the button again to confirm.',
     LiveNotice.sosSent:
         'Alert sent to your emergency contact. Stop in a safe place and wait.',
     LiveNotice.sosFailed:
@@ -542,6 +582,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
     LiveNotice.permissionBlocked:
         'L\'accès au micro est désactivé. Touchez l\'écran pour ouvrir les réglages et l\'activer.',
     LiveNotice.stopped: 'Assistant arrêté.',
+    LiveNotice.stopConfirm:
+        "Arrêter l'assistant ? Touche le bouton encore une fois pour confirmer.",
     LiveNotice.sosSent:
         'Alerte envoyée à ton contact d\'urgence. Arrête-toi dans un endroit sûr et attends.',
     LiveNotice.sosFailed:
@@ -596,6 +638,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
     LiveNotice.permissionBlocked:
         'A permissão de microfone está desativada. Toque na tela para abrir os ajustes e ativá-la.',
     LiveNotice.stopped: 'Assistente parado.',
+    LiveNotice.stopConfirm:
+        'Parar o assistente? Toque no botão de novo para confirmar.',
     LiveNotice.sosSent:
         'Alerta enviado ao seu contato de emergência. Pare em um lugar seguro e espere.',
     LiveNotice.sosFailed:
@@ -650,6 +694,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
     LiveNotice.permissionBlocked:
         'Il permesso del microfono è disattivato. Tocca lo schermo per aprire le impostazioni e attivarlo.',
     LiveNotice.stopped: 'Assistente fermato.',
+    LiveNotice.stopConfirm:
+        "Fermare l'assistente? Tocca di nuovo il pulsante per confermare.",
     LiveNotice.sosSent:
         'Avviso inviato al tuo contatto di emergenza. Fermati in un luogo sicuro e aspetta.',
     LiveNotice.sosFailed:
@@ -1669,10 +1715,32 @@ class LiveController extends Notifier<LiveUiState> {
     }
   }
 
+  /// Tiempo para confirmar Detener con el segundo toque.
+  static const Duration stopConfirmWindow = Duration(seconds: 4);
+  DateTime? _stopArmedAt;
+
+  /// Botón Detener: el primer toque pregunta y el segundo, dentro de
+  /// [stopConfirmWindow], detiene. En la jornada del 24-oct un participante con
+  /// TalkBack detuvo la app 11 veces en 40 min sin querer.
+  void requestStop() {
+    final now = ref.read(liveClockProvider)();
+    final armed = _stopArmedAt;
+    if (armed != null && now.difference(armed) <= stopConfirmWindow) {
+      _stopArmedAt = null;
+      _log('[Lazarus] Detener confirmado con el botón');
+      disconnect();
+      return;
+    }
+    _stopArmedAt = now;
+    _log('[Lazarus] Detener: primer toque, se pide confirmación');
+    _announce(LiveNotice.stopConfirm);
+  }
+
   /// Botón Detener: cierra la sesión; la próxima empieza con la presentación.
   /// Botón Detener: cierra la sesión, libera micrófono y cámara y avisa con una
   /// frase corta (sin reconectar).
   void disconnect() {
+    _stopArmedAt = null;
     // Logs de campo al panel (HU-045): lo nuevo desde la última subida.
     unawaited(_uploadLogs('al detener'));
     _offlineReminder?.cancel();
@@ -1752,6 +1820,11 @@ class LiveController extends Notifier<LiveUiState> {
     switch (message.type) {
       case LiveResponseType.setupComplete:
         _log('[Lazarus] setupComplete → sesión lista, arrancando media');
+        // Lo dicho antes de una sesión nueva (p. ej. al bloquear la pantalla)
+        // no se responde en esta: medirlo daba latencias falsas de hasta 56 s.
+        _lastVoiceAt = null;
+        _lastWordAt = null;
+        _wordSinceReply = false;
         // El panel pidió los logs de este teléfono (HU-045): se suben ya.
         if (!_uploadChecked) {
           _uploadChecked = true;
@@ -2165,11 +2238,20 @@ class LiveController extends Notifier<LiveUiState> {
     }
   }
 
-  Future<void> _uploadLogs(String reason) async {
-    final files = await ref.read(deviceAccessRepositoryProvider).uploadLogs();
-    if (files > 0) {
-      _log('[Lazarus] logs subidos al panel ($reason): $files archivos');
-    }
+  /// Subidas en fila: dos a la vez leen los mismos offsets y mandan lo mismo
+  /// (jornada del 24-oct: el .zip de un teléfono traía la evidencia repetida al
+  /// tocar Detener seguido con la red lenta).
+  Future<void> _uploads = Future<void>.value();
+
+  Future<void> _uploadLogs(String reason) {
+    final run = _uploads.then((_) async {
+      final files = await ref.read(deviceAccessRepositoryProvider).uploadLogs();
+      if (files > 0) {
+        _log('[Lazarus] logs subidos al panel ($reason): $files archivos');
+      }
+    });
+    _uploads = run.catchError((Object _) {});
+    return run;
   }
 
   RouteAStatus _routeAStatus() {
@@ -2378,6 +2460,11 @@ class LiveController extends Notifier<LiveUiState> {
     final position = fix == null
         ? 'without position (no GPS yet)'
         : 'with the position';
+    if (isPlaceMarkerNote(text)) {
+      return 'ok: note saved at $time $position, but it only marks the spot. '
+          'Confirm in one word and then ask in one short sentence what is at '
+          'this spot.';
+    }
     return 'ok: note saved at $time $position. Reply ONLY with one word '
         'confirming it was written down.';
   }
