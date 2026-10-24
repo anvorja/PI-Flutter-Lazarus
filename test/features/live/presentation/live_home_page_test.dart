@@ -111,12 +111,32 @@ void main() {
 
     await tester.tap(stopButton);
     await tester.pump();
+    await tester.tap(stopButton); // confirma
+    await tester.pump();
 
     expect(session.connected, isFalse);
     expect(media.micStarted, isFalse);
     expect(media.cameraStarted, isFalse);
-    expect(announcements, [noticeText(LiveNotice.stopped, 'es')]);
+    expect(announcements, [
+      noticeText(LiveNotice.stopConfirm, 'es'),
+      noticeText(LiveNotice.stopped, 'es'),
+    ]);
     expect(stopButton, findsNothing);
+  });
+
+  testWidgets('Detener: un solo toque pregunta y no detiene '
+      '(jornada del 24-oct: con TalkBack se detenía sin querer)', (
+    tester,
+  ) async {
+    await pumpApp(tester);
+    await startSession(tester);
+
+    await tester.tap(stopButton);
+    await tester.pump();
+
+    expect(session.connected, isTrue);
+    expect(announcements, [noticeText(LiveNotice.stopConfirm, 'es')]);
+    expect(stopButton, findsOneWidget);
   });
 
   testWidgets('TalkBack: el botón se anuncia como "Detener asistente"', (

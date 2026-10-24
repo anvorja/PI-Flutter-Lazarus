@@ -1,5 +1,7 @@
 // HU-002: qué hace la app según la causa por la que terminó la sesión.
 
+import 'dart:async';
+
 import 'package:app/features/access/presentation/providers/access_providers.dart';
 import 'package:app/features/live/domain/entities/live_close.dart';
 import 'package:app/features/live/domain/entities/live_message.dart';
@@ -17,6 +19,7 @@ void main() {
   late List<String> announcements;
   late ProviderContainer container;
   late FakeDeviceAccess deviceAccess;
+  late DateTime now;
 
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
@@ -24,6 +27,7 @@ void main() {
     session = FakeLiveSessionRepository();
     announcements = [];
     deviceAccess = FakeDeviceAccess();
+    now = DateTime(2026, 10, 24, 10);
     container = ProviderContainer(
       overrides: [
         sharedPreferencesProvider.overrideWithValue(prefs),
@@ -40,6 +44,7 @@ void main() {
         announcerStopProvider.overrideWithValue(() {}),
         retryDelayProvider.overrideWithValue((_) => Duration.zero),
         deviceAccessRepositoryProvider.overrideWithValue(deviceAccess),
+        liveClockProvider.overrideWithValue(() => now),
       ],
     );
     addTearDown(container.dispose);
@@ -208,6 +213,26 @@ void main() {
       expect(deviceAccess.uploads, 1);
     });
 
+    test('con la red lenta, las subidas van de a una y no repiten lo mismo '
+        '(jornada del 24-oct)', () async {
+      deviceAccess.slowNetwork = Completer<void>();
+      await openSession();
+      controller().disconnect();
+      await settle();
+      controller().onTap();
+      await settle();
+      session.emitSetupComplete();
+      await settle();
+      controller().disconnect();
+      await settle();
+      expect(deviceAccess.uploads, 1); // la segunda espera a la primera
+      deviceAccess.slowNetwork!.complete();
+      await settle();
+      await settle();
+      expect(deviceAccess.uploads, 2);
+      expect(deviceAccess.maxUploadsInFlight, 1);
+    });
+
     test('si el panel pidió los logs, los sube al empezar la sesión', () async {
       deviceAccess.requested = true;
       await openSession();
@@ -282,5 +307,30 @@ void main() {
       noticeText(LiveNotice.retrying, 'de'),
       noticeText(LiveNotice.retrying, 'es'),
     );
+  });
+
+  group('Detener con confirmación (jornada del 24-oct)', () {
+    test('el segundo toque dentro de 4 s detiene', () async {
+      await openSession();
+      controller().requestStop();
+      expect(announcements, [notice(LiveNotice.stopConfirm)]);
+      expect(state().isLive, isTrue);
+      now = now.add(const Duration(seconds: 3));
+      controller().requestStop();
+      expect(state().isLive, isFalse);
+      expect(announcements.last, notice(LiveNotice.stopped));
+    });
+
+    test('pasados 4 s, el toque vuelve a preguntar', () async {
+      await openSession();
+      controller().requestStop();
+      now = now.add(const Duration(seconds: 5));
+      controller().requestStop();
+      expect(state().isLive, isTrue);
+      expect(announcements, [
+        notice(LiveNotice.stopConfirm),
+        notice(LiveNotice.stopConfirm),
+      ]);
+    });
   });
 }
