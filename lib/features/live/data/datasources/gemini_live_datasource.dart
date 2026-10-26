@@ -74,6 +74,7 @@ class GeminiLiveClientOptions {
     this.screenLocked = false,
     this.screenReader = false,
     this.deviceToken,
+    this.networkInfo,
     this.onResponse,
     this.onOpen,
     this.onClose,
@@ -111,6 +112,9 @@ class GeminiLiveClientOptions {
   /// Token del teléfono en el panel del piloto (HU-044); `null` sin registro.
   final String? deviceToken;
 
+  /// Operador y tipo de red, para comparar la latencia entre SIM y redes.
+  final Future<Map<String, String>?> Function()? networkInfo;
+
   final void Function(LiveResponse message)? onResponse;
   final void Function()? onOpen;
 
@@ -147,8 +151,7 @@ class GeminiLiveClient {
         // Primer mensaje recibido implica que el socket está abierto.
         if (!connected) {
           connected = true;
-          _sendStart();
-          _opts.onOpen?.call();
+          _opened();
         }
         _onMessage(event);
       },
@@ -169,8 +172,7 @@ class GeminiLiveClient {
         .then((_) {
           if (!connected) {
             connected = true;
-            _sendStart();
-            _opts.onOpen?.call();
+            _opened();
           }
         })
         .catchError((Object error) {
@@ -185,7 +187,19 @@ class GeminiLiveClient {
     connected = false;
   }
 
-  void _sendStart() {
+  /// Envía `start` (con la red, si se conoce) y avisa que la sesión abrió.
+  Future<void> _opened() async {
+    Map<String, String>? network;
+    try {
+      network = await _opts.networkInfo?.call();
+    } on Object {
+      network = null; // la red es solo un dato de medición
+    }
+    _sendStart(network);
+    _opts.onOpen?.call();
+  }
+
+  void _sendStart([Map<String, String>? network]) {
     _send({
       'type': 'start',
       'language': _opts.language,
@@ -199,6 +213,7 @@ class GeminiLiveClient {
       if (_opts.screenLocked) 'screenLocked': true,
       if (_opts.screenReader) 'screenReader': true,
       if (_opts.deviceToken != null) 'deviceToken': _opts.deviceToken,
+      if (network != null && network.isNotEmpty) 'network': network,
     });
   }
 

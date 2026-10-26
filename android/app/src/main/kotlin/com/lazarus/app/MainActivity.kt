@@ -13,6 +13,8 @@ import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.media.AudioPlaybackConfiguration
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -20,6 +22,8 @@ import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.telephony.SmsManager
+import android.telephony.SubscriptionManager
+import android.telephony.TelephonyManager
 import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -161,6 +165,8 @@ class MainActivity : FlutterActivity() {
                         ),
                     )
                 }
+                // Red de la sesión (medición de capacidad): operador y tipo de red.
+                "networkInfo" -> result.success(networkInfo())
                 else -> result.notImplemented()
             }
         }
@@ -268,6 +274,35 @@ class MainActivity : FlutterActivity() {
             debugLog('w', "LazarusSos", "no se pudo llamar: ${e.message}")
             false
         }
+    }
+
+    /**
+     * Tipo de red activa y operador de la SIM que da los datos (con doble SIM,
+     * la SIM de datos predeterminada). No lleva el nombre de la red Wi-Fi ni
+     * ningún dato de la persona; no pide permisos peligrosos.
+     */
+    private fun networkInfo(): Map<String, String> {
+        val out = HashMap<String, String>()
+        try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val caps = cm.getNetworkCapabilities(cm.activeNetwork)
+            out["transport"] = when {
+                caps == null -> "none"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+                else -> "other"
+            }
+            var tm = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+            val dataSub = SubscriptionManager.getDefaultDataSubscriptionId()
+            if (dataSub != SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+                tm = tm.createForSubscriptionId(dataSub)
+            }
+            val operator = tm.networkOperatorName
+            if (!operator.isNullOrBlank()) out["operator"] = operator
+        } catch (e: Exception) {
+            debugLog('w', "LazarusSession", "sin datos de red: ${e.message}")
+        }
+        return out
     }
 
     private fun isIgnoringBatteryOptimizations(): Boolean {
