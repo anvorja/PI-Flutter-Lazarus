@@ -1193,7 +1193,8 @@ class LiveController extends Notifier<LiveUiState> {
         _announce(LiveNotice.permissionBlocked);
         return;
     }
-    if (await _askBatteryExemptionOnce() || !ref.mounted) return;
+    if (await _ensureBatteryExemption() || !ref.mounted) return;
+    unawaited(_settings.setLastSessionStart(ref.read(liveClockProvider)()));
     // La sesión sigue con la pantalla bloqueada (HU-017).
     unawaited(_startBackground());
     // La ubicación acompaña a la sesión; sin permiso la sesión sigue igual.
@@ -1208,16 +1209,23 @@ class LiveController extends Notifier<LiveUiState> {
     _announce(LiveNotice.connecting);
   }
 
-  /// La primera vez, antes de empezar, pide excluir a Lazarus de la optimización
-  /// de batería (si no, Android puede suspenderla con la pantalla bloqueada) y lo
-  /// explica en voz alta, con el ajuste extra de Xiaomi. Esa vez no se abre la
-  /// sesión (el saludo se cruzaría con el aviso y el diálogo): la persona vuelve a
-  /// tocar la pantalla. Devuelve `true` si se pidió.
-  Future<bool> _askBatteryExemptionOnce() async {
-    if (_settings.getBatteryExemptionAsked()) return false;
-    await _settings.setBatteryExemptionAsked();
+  /// Antes de empezar, pide excluir a Lazarus de la optimización de batería
+  /// (si no, Android puede cerrarla con la pantalla bloqueada) y lo explica en
+  /// voz alta, con el ajuste extra de Xiaomi. Lo pide la primera vez y, otra
+  /// vez, si Android cerró la app en la sesión anterior: la exención se puede
+  /// perder (p. ej. al actualizar la app) y el 24 y el 26 de octubre el sistema
+  /// cerró la app en dos marcas distintas. Esa vez no se abre la sesión (el
+  /// saludo se cruzaría con el aviso y el diálogo): la persona vuelve a tocar la
+  /// pantalla. Devuelve `true` si se pidió.
+  Future<bool> _ensureBatteryExemption() async {
+    final killed = await _previousSessionKilledBySystem();
     final status = await _background.batteryStatus();
-    if (status.exempt || !ref.mounted) return false;
+    if (!ref.mounted || status.exempt) return false;
+    if (_settings.getBatteryExemptionAsked() && !killed) {
+      _log('[Lazarus] batería: con optimización (ya se pidió la exención)');
+      return false;
+    }
+    await _settings.setBatteryExemptionAsked();
     _announce(
       status.manufacturer == 'xiaomi'
           ? LiveNotice.batteryExemptionXiaomi
@@ -1229,6 +1237,33 @@ class LiveController extends Notifier<LiveUiState> {
     );
     return true;
   }
+
+  static const _exitLabels = {
+    'system': 'Android cerró la app',
+    'user': 'la app se cerró desde recientes o Ajustes',
+    'crash': 'la app falló',
+  };
+
+  /// Si la sesión anterior quedó abierta (sin Detener) y el proceso terminó
+  /// después, lo registra con el motivo de Android (evidencia de HU-017).
+  /// `true` solo si fue el sistema el que la cerró.
+  Future<bool> _previousSessionKilledBySystem() async {
+    final started = _settings.getLastSessionStart();
+    if (started == null) return false;
+    await _settings.setLastSessionStart(null);
+    final exit = await _background.lastExit();
+    if (exit == null || !exit.at.isAfter(started)) return false;
+    final detail = exit.description.isEmpty ? '' : ', ${exit.description}';
+    _log(
+      '[Lazarus] la sesión anterior no terminó con Detener: '
+      '${_exitLabels[exit.kind] ?? "el proceso terminó"} a las '
+      '${_clockTime(exit.at)} (motivo ${exit.reason}$detail)',
+    );
+    return exit.kind == 'system';
+  }
+
+  static String _clockTime(DateTime t) =>
+      [t.hour, t.minute, t.second].map((v) => '$v'.padLeft(2, '0')).join(':');
 
   Future<void> _startBackground() async {
     if (_backgroundOn) return;
@@ -1715,9 +1750,17 @@ class LiveController extends Notifier<LiveUiState> {
     }
   }
 
-  /// Tiempo para confirmar Detener con el segundo toque.
-  static const Duration stopConfirmWindow = Duration(seconds: 4);
+  /// Tiempo para confirmar Detener con el segundo toque, contado desde el
+  /// primero. Decir la pregunta toma unos 3,5 s: con 4 s, quien esperaba a que
+  /// terminara para tocar oía la pregunta otra vez (26-oct). Quedan unos 4 s
+  /// para tocar después de oírla.
+  static const Duration stopConfirmWindow = Duration(seconds: 8);
   DateTime? _stopArmedAt;
+
+  /// Tras Detener, el botón desaparece y la pantalla entera vuelve a iniciar:
+  /// un toque de más en este tiempo no abre otra sesión (26-oct).
+  static const Duration restartGuard = Duration(milliseconds: 1500);
+  DateTime? _stoppedByButtonAt;
 
   /// Botón Detener: el primer toque pregunta y el segundo, dentro de
   /// [stopConfirmWindow], detiene. En la jornada del 24-oct un participante con
@@ -1729,10 +1772,15 @@ class LiveController extends Notifier<LiveUiState> {
       _stopArmedAt = null;
       _log('[Lazarus] Detener confirmado con el botón');
       disconnect();
+      _stoppedByButtonAt = now;
       return;
     }
     _stopArmedAt = now;
-    _log('[Lazarus] Detener: primer toque, se pide confirmación');
+    final talkBack = ref.read(screenReaderActiveProvider)();
+    _log(
+      '[Lazarus] Detener: primer toque, se pide confirmación '
+      '(${talkBack ? "con" : "sin"} TalkBack)',
+    );
     _announce(LiveNotice.stopConfirm);
   }
 
@@ -1741,6 +1789,8 @@ class LiveController extends Notifier<LiveUiState> {
   /// frase corta (sin reconectar).
   void disconnect() {
     _stopArmedAt = null;
+    // Terminó con Detener: si Android cierra la app después, no es un corte.
+    unawaited(_settings.setLastSessionStart(null));
     // Logs de campo al panel (HU-045): lo nuevo desde la última subida.
     unawaited(_uploadLogs('al detener'));
     _offlineReminder?.cancel();
@@ -1788,6 +1838,12 @@ class LiveController extends Notifier<LiveUiState> {
     if (state.micMuted) {
       _resumeFromMute();
     } else if (!state.isLive) {
+      final stopped = _stoppedByButtonAt;
+      if (stopped != null &&
+          ref.read(liveClockProvider)().difference(stopped) < restartGuard) {
+        _log('[Lazarus] toque justo después de Detener: no inicia');
+        return;
+      }
       connect();
     }
   }

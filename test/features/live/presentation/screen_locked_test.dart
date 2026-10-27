@@ -1,6 +1,7 @@
 /// HU-017: la sesión sigue con la pantalla bloqueada. Un servicio en primer
 /// plano la mantiene mientras dura; "Detener" en la notificación equivale al
-/// botón; la primera vez se pide quitar la optimización de batería; y como
+/// botón; se pide quitar la optimización de batería la primera vez y después de
+/// que Android cerró la app en una sesión; y como
 /// Android no deja usar la cámara sin la app visible, al bloquear se abre una
 /// sesión nueva sin ninguna imagen (el asistente no puede describir la última
 /// foto como si fuera la escena actual) y al desbloquear, una con cámara.
@@ -161,6 +162,109 @@ void main() {
       await settle();
       expect(spoken.single, contains('sin restricciones de batería'));
       expect(spoken.single, isNot(contains('Xiaomi')));
+    });
+
+    group('si Android cerró la app en la sesión anterior (24 y 26-oct)', () {
+      // La sesión anterior empezó a las 18:26 y nunca se tocó Detener.
+      final started = DateTime(2026, 10, 26, 18, 26, 27);
+      final prefs = <String, Object>{
+        'lazarus_battery_exemption_asked': true,
+        'lazarus_last_session_start': started.millisecondsSinceEpoch,
+      };
+
+      test('por memoria baja: lo registra y vuelve a pedir la exención, '
+          'que se había perdido', () async {
+        background = FakeBackgroundSession(exempt: false)
+          ..exit = (
+            kind: 'system',
+            reason: 3,
+            description: '',
+            at: DateTime(2026, 10, 26, 18, 41, 37),
+          );
+        await build(prefs: prefs);
+        controller().onTap();
+        await settle();
+        expect(
+          logs,
+          contains(
+            '[Lazarus] la sesión anterior no terminó con Detener: '
+            'Android cerró la app a las 18:41:37 (motivo 3)',
+          ),
+        );
+        expect(background.exemptionRequests, 1);
+        expect(session.connectCalls, 0);
+
+        // El siguiente toque empieza: el cierre ya quedó registrado.
+        background.exempt = false;
+        controller().onTap();
+        await settle();
+        expect(background.exemptionRequests, 1);
+        expect(session.connectCalls, 1);
+      });
+
+      test('cerrada desde recientes: lo registra, pero no insiste con la '
+          'batería', () async {
+        background = FakeBackgroundSession(exempt: false)
+          ..exit = (
+            kind: 'user',
+            reason: 13,
+            description: 'SwipeUpClean',
+            at: DateTime(2026, 10, 26, 18, 30),
+          );
+        await build(prefs: prefs);
+        controller().onTap();
+        await settle();
+        expect(
+          logs,
+          contains(
+            '[Lazarus] la sesión anterior no terminó con Detener: la app se '
+            'cerró desde recientes o Ajustes a las 18:30:00 '
+            '(motivo 13, SwipeUpClean)',
+          ),
+        );
+        expect(background.exemptionRequests, 0);
+        expect(session.connectCalls, 1);
+      });
+
+      test('un cierre anterior a la sesión no cuenta', () async {
+        background = FakeBackgroundSession(exempt: false)
+          ..exit = (
+            kind: 'system',
+            reason: 3,
+            description: '',
+            at: DateTime(2026, 10, 26, 18, 17),
+          );
+        await build(prefs: prefs);
+        controller().onTap();
+        await settle();
+        expect(
+          logs.where((l) => l.contains('no terminó con Detener')),
+          isEmpty,
+        );
+        expect(background.exemptionRequests, 0);
+      });
+    });
+
+    test('si la sesión terminó con Detener, un cierre posterior de Android no '
+        'cuenta como corte', () async {
+      background = FakeBackgroundSession(exempt: false);
+      await build(prefs: {'lazarus_battery_exemption_asked': true});
+      await startSession();
+      background.pressStopInNotification();
+      await settle();
+      expect(state().isLive, isFalse);
+
+      background.exit = (
+        kind: 'system',
+        reason: 3,
+        description: '',
+        at: DateTime.now().add(const Duration(minutes: 5)),
+      );
+      controller().onTap();
+      await settle();
+      expect(logs.where((l) => l.contains('no terminó con Detener')), isEmpty);
+      expect(background.exemptionRequests, 0);
+      expect(session.connectCalls, 2);
     });
 
     test('si ya está excluida, no pregunta', () async {

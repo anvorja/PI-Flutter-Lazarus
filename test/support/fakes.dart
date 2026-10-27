@@ -417,6 +417,12 @@ class FakeBackgroundSession implements BackgroundSessionRepository {
     exempt = grantExemption;
     return exempt;
   }
+
+  /// Último cierre del proceso que informa Android (null: sin historial).
+  ProcessExit? exit;
+
+  @override
+  Future<ProcessExit?> lastExit() async => exit;
 }
 
 /// Red de datos simulada (HU-042): [setOnline] emite el cambio como el sistema.

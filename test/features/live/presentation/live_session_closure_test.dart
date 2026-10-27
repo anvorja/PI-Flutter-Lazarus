@@ -309,8 +309,8 @@ void main() {
     );
   });
 
-  group('Detener con confirmación (jornada del 24-oct)', () {
-    test('el segundo toque dentro de 4 s detiene', () async {
+  group('Detener con confirmación (jornadas del 24 y el 26-oct)', () {
+    test('el segundo toque dentro de 8 s detiene', () async {
       await openSession();
       controller().requestStop();
       expect(announcements, [notice(LiveNotice.stopConfirm)]);
@@ -321,16 +321,47 @@ void main() {
       expect(announcements.last, notice(LiveNotice.stopped));
     });
 
-    test('pasados 4 s, el toque vuelve a preguntar', () async {
+    test('quien espera a que termine la pregunta (6 s) detiene al tocar, '
+        'sin oírla otra vez', () async {
       await openSession();
       controller().requestStop();
-      now = now.add(const Duration(seconds: 5));
+      now = now.add(const Duration(seconds: 6));
+      controller().requestStop();
+      expect(state().isLive, isFalse);
+      expect(
+        announcements.where((a) => a == notice(LiveNotice.stopConfirm)),
+        hasLength(1),
+      );
+    });
+
+    test('pasados 8 s, el toque vuelve a preguntar', () async {
+      await openSession();
+      controller().requestStop();
+      now = now.add(const Duration(seconds: 9));
       controller().requestStop();
       expect(state().isLive, isTrue);
       expect(announcements, [
         notice(LiveNotice.stopConfirm),
         notice(LiveNotice.stopConfirm),
       ]);
+    });
+
+    test('un toque de más justo después de Detener no abre otra sesión; '
+        'pasado 1,5 s, el toque sí inicia', () async {
+      await openSession();
+      controller().requestStop();
+      controller().requestStop();
+      expect(state().isLive, isFalse);
+
+      now = now.add(const Duration(milliseconds: 400));
+      controller().onTap();
+      await settle();
+      expect(session.connectCalls, 1);
+
+      now = now.add(const Duration(seconds: 2));
+      controller().onTap();
+      await settle();
+      expect(session.connectCalls, 2);
     });
   });
 }

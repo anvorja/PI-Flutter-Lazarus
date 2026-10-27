@@ -2,6 +2,8 @@ package com.lazarus.app
 
 import android.Manifest
 import android.app.Activity
+import android.app.ActivityManager
+import android.app.ApplicationExitInfo
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -148,6 +150,7 @@ class MainActivity : FlutterActivity() {
                     ),
                 )
                 "requestBatteryExemption" -> requestBatteryExemption(result)
+                "lastExit" -> result.success(lastExit())
                 // Registro del teléfono en el panel del piloto (HU-044).
                 "deviceInfo" -> {
                     val info = packageManager.getPackageInfo(packageName, 0)
@@ -303,6 +306,39 @@ class MainActivity : FlutterActivity() {
             debugLog('w', "LazarusSession", "sin datos de red: ${e.message}")
         }
         return out
+    }
+
+    /**
+     * Cómo terminó la última vez el proceso (Android 11+), para saber si una
+     * sesión acabó porque el sistema cerró la app y no con Detener (HU-017).
+     * `kind`: `system` (memoria baja u otro cierre del sistema), `user` (la
+     * persona la cerró desde recientes o Ajustes), `crash` u `other`.
+     */
+    private fun lastExit(): Map<String, Any>? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+        val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val info = am.getHistoricalProcessExitReasons(packageName, 0, 1).firstOrNull() ?: return null
+        val description = info.description ?: ""
+        val kind = when (info.reason) {
+            ApplicationExitInfo.REASON_LOW_MEMORY,
+            ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE,
+            ApplicationExitInfo.REASON_FREEZER -> "system"
+            // HyperOS marca así el gesto de cerrar desde recientes.
+            ApplicationExitInfo.REASON_OTHER ->
+                if (description.contains("swipe", ignoreCase = true)) "user" else "system"
+            ApplicationExitInfo.REASON_USER_REQUESTED,
+            ApplicationExitInfo.REASON_USER_STOPPED -> "user"
+            ApplicationExitInfo.REASON_CRASH,
+            ApplicationExitInfo.REASON_CRASH_NATIVE,
+            ApplicationExitInfo.REASON_ANR -> "crash"
+            else -> "other"
+        }
+        return mapOf(
+            "kind" to kind,
+            "reason" to info.reason,
+            "description" to description,
+            "timestampMs" to info.timestamp,
+        )
     }
 
     private fun isIgnoringBatteryOptimizations(): Boolean {
