@@ -54,6 +54,9 @@ class RouteGuide {
   int _next;
   int? _approached;
 
+  /// Último punto alcanzado o dado por pasado; `null` al empezar o al retomar.
+  int? _last;
+
   /// Índice del siguiente punto por alcanzar.
   int get nextIndex => _next;
 
@@ -74,7 +77,8 @@ class RouteGuide {
         p.latitude,
         p.longitude,
       );
-      if (d <= arriveRadius(p, fix)) {
+      if (d <= arriveRadius(p, fix) && (i == _next || _advanced(fix))) {
+        _last = i;
         _next = i + 1;
         // El aviso de llegada ya nombra el siguiente punto: si está cerca, no
         // se anuncia otra vez al acercarse.
@@ -121,8 +125,11 @@ class RouteGuide {
         n.latitude,
         n.longitude,
       );
-      if (toNext < span - maxArriveM && d <= 2 * p.approachM) {
+      if (toNext < span - maxArriveM &&
+          d <= 2 * p.approachM &&
+          _advanced(fix)) {
         final passed = _next;
+        _last = passed;
         _next++;
         return RouteEvent(RouteEventKind.passed, passed, profile);
       }
@@ -132,6 +139,31 @@ class RouteGuide {
       return RouteEvent(RouteEventKind.approaching, _next, profile);
     }
     return null;
+  }
+
+  /// Si la persona ya se alejó del último punto lo que mide el tramo hasta el
+  /// pendiente (con [maxArriveM] de margen). Sin esto no se salta un punto: en
+  /// un tramo en U el punto de después queda cerca del anterior, y el 27-oct
+  /// la guía dio por pasado el 7 de la vuelta (y su "gira a la izquierda")
+  /// cuando la persona seguía en el 6.
+  bool _advanced(LocationFix fix) {
+    final last = _last;
+    if (last == null) return true;
+    final a = profile.points[last];
+    final b = profile.points[_next];
+    final moved = distanceMeters(
+      fix.latitude,
+      fix.longitude,
+      a.latitude,
+      a.longitude,
+    );
+    final span = distanceMeters(
+      a.latitude,
+      a.longitude,
+      b.latitude,
+      b.longitude,
+    );
+    return moved >= span - maxArriveM;
   }
 
   /// Radio de llegada a [p]: el del perfil o la precisión del GPS, si es

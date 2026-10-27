@@ -1145,7 +1145,9 @@ class LiveController extends Notifier<LiveUiState> {
   void _teardown() {
     _routeAWatch?.cancel();
     _routeAWatch = null;
-    _stopRouteGuide();
+    // La ruta guiada no se corta con la sesión: sigue tras reconectar, al
+    // bloquear la pantalla o al cambiar de idioma. Solo Detener y stop_route
+    // la terminan. El 27-oct un corte la borró antes del cruce de la Quinta.
     _cameraSwitch?.cancel();
     _cameraSwitch = null;
     _stopObserving();
@@ -1868,6 +1870,7 @@ class LiveController extends Notifier<LiveUiState> {
       ref.read(sosControllerProvider.notifier).cancel();
     }
     _teardown();
+    _stopRouteGuide();
     _stopBackground();
     _endTelemetry('stopped');
     _routeAOffered = false;
@@ -1969,6 +1972,8 @@ class LiveController extends Notifier<LiveUiState> {
           const Duration(seconds: 30),
           (_) => checkRouteA(),
         );
+        final routeGoesOn =
+            _pendingKickoff != _PendingKickoff.intro && _routeGuide != null;
         switch (_pendingKickoff) {
           case _PendingKickoff.voice:
             _expectReply();
@@ -1990,6 +1995,8 @@ class LiveController extends Notifier<LiveUiState> {
             _session.sendKickoff();
         }
         _pendingKickoff = _PendingKickoff.intro;
+        // La sesión nueva del asistente no sabe que hay una ruta en curso.
+        if (routeGoesOn) _sendRouteGoesOn();
         _markActivity();
         _startMedia();
         // La pantalla cambió mientras se conectaba.
@@ -2597,6 +2604,20 @@ class LiveController extends Notifier<LiveUiState> {
     }
     _log('[Lazarus] ruta: $message');
     _sendRoute(message);
+  }
+
+  void _sendRouteGoesOn() {
+    final guide = _routeGuide!;
+    final total = guide.profile.points.length;
+    final next = guide.nextPoint;
+    _log('[Lazarus] ruta: sigue tras la sesión nueva "${guide.profile.slug}"');
+    _sendRoute(
+      "still guiding: the app is still guiding along '${guide.profile.name}'"
+      '${next == null ? '' : ". Next: point ${guide.nextIndex + 1} of $total, '${next.name}'"}. '
+      'Tell the person in one short sentence that the route guidance goes on. '
+      "The app will keep sending '[RUTA]' at each point: do not describe the "
+      'route yourself.',
+    );
   }
 
   void _sendRoute(String message) {

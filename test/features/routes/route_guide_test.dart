@@ -55,9 +55,14 @@ Map<String, Object?> _profileJson({
   ],
 };
 
-LocationFix _at(double lat, {double accuracy = 5, DateTime? at}) => LocationFix(
+LocationFix _at(
+  double lat, {
+  double lon = 0,
+  double accuracy = 5,
+  DateTime? at,
+}) => LocationFix(
   latitude: lat,
-  longitude: 0,
+  longitude: lon,
   accuracyM: accuracy,
   at: at ?? DateTime(2026, 10, 24, 9),
 );
@@ -156,6 +161,25 @@ void main() {
       );
       expect(guide.nextPoint!.name, 'Cebra');
       expect(guide.update(_at(2 * _step), ok)!.kind, RouteEventKind.arrived);
+    });
+
+    test('en un tramo en U no salta el punto de la vuelta', () {
+      // B está 33 m al norte de A; C, a unos 15 m de A, ya de regreso.
+      final u = RouteProfile.fromJson({
+        ..._profileJson(),
+        'points': [
+          {'name': 'A', 'lat': 0, 'lon': 0},
+          {'name': 'B', 'lat': 0.0003, 'lon': 0, 'instruction': 'Gira'},
+          {'name': 'C', 'lat': 0.0001, 'lon': 0.0001},
+        ],
+      });
+      final guide = RouteGuide(u)..update(_at(0), ok);
+      // A 5 m de A: más cerca de C que B, y dentro del radio de C.
+      expect(guide.update(_at(0.00005), ok), isNull);
+      expect(guide.nextPoint!.name, 'B');
+      final b = guide.update(_at(0.0003), ok)!;
+      expect(b.kind, RouteEventKind.arrived);
+      expect(b.point.name, 'B');
     });
 
     test('se retoma en el punto más cercano', () {
@@ -434,6 +458,43 @@ void main() {
       await settle();
       expect(session.routeGuides, isEmpty);
       expect(await callTool('stop_route'), 'ok: there was no active route.');
+    });
+
+    test('un corte de conexión no borra la ruta (27-oct)', () async {
+      await connect();
+      await reliableAt(0);
+      await callTool('start_route');
+      live().checkRoute(); // torniquetes
+      await settle();
+      session.emitError();
+      await settle();
+      session.emitSetupComplete();
+      await settle();
+      expect(
+        session.routeGuides.last,
+        startsWith(
+          "still guiding: the app is still guiding along 'Estación de prueba "
+          "→ Entrada'. Next: point 2 of 4, 'Árbol grande'.",
+        ),
+      );
+      gps.fixes.add(_at(_step, at: t0.add(const Duration(seconds: 9))));
+      await settle();
+      live().checkRoute();
+      await settle();
+      expect(session.routeGuides.last, startsWith('reached point 2 of 4'));
+    });
+
+    test('Detener sí termina la ruta', () async {
+      await connect();
+      await reliableAt(0);
+      await callTool('start_route');
+      live().disconnect();
+      await settle();
+      await connect();
+      expect(session.routeGuides, isEmpty);
+      live().checkRoute();
+      await settle();
+      expect(session.routeGuides, isEmpty);
     });
 
     test('en modo reunión solo pasan los cruces y los riesgos altos', () async {
