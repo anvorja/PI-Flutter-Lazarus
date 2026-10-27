@@ -202,6 +202,14 @@ void main() {
     },
   );
 
+  test('mientras se confirma Detener no observa (26-oct: un [OBSERVA] '
+      'enviado tras el primer toque hizo hablar al asistente encima de la '
+      'pregunta)', () async {
+    controller().requestStop();
+    await wait(1500);
+    expect(session.observes, 0);
+  });
+
   test('Detener apaga el ciclo', () async {
     controller().disconnect();
     await wait(1500);
