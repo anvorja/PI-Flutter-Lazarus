@@ -1040,6 +1040,10 @@ class LiveController extends Notifier<LiveUiState> {
   /// TalkBack está hablando: en altavoz el micrófono no se envía (HU-023).
   bool _screenReaderSpeaking = false;
 
+  /// Última vez que habló TalkBack: mientras la persona explora la pantalla,
+  /// el asistente no observa.
+  DateTime? _screenReaderLastAt;
+
   /// El micrófono está en pausa porque habla la voz del teléfono (avisos).
   bool _micPausedForNotice = false;
   StreamSubscription<bool>? _screenReaderSpeech;
@@ -1157,6 +1161,7 @@ class LiveController extends Notifier<LiveUiState> {
     _screenReaderTail?.cancel();
     _screenReaderTail = null;
     _screenReaderSpeaking = false;
+    _screenReaderLastAt = null;
     _media.stopMic();
     _media.stopCamera();
     _media.destroyPlayer();
@@ -2233,6 +2238,15 @@ class LiveController extends Notifier<LiveUiState> {
     if (ref.read(sosControllerProvider) != SosStatus.idle) return;
     if (_stopConfirmOpen(ref.read(liveClockProvider)())) return;
     final now = DateTime.now();
+    // Con TalkBack hablando o recién callado, la persona está explorando la
+    // pantalla: el asistente no le habla encima.
+    final screenReaderAt = _screenReaderLastAt;
+    if (_screenReaderSpeaking ||
+        (screenReaderAt != null &&
+            now.difference(screenReaderAt) <
+                ref.read(screenReaderObserveQuietProvider))) {
+      return;
+    }
     // Se espera una respuesta (o un tiempo máximo) antes de observar, para no
     // cortarla; y tras una respuesta, una pausa por si la persona sigue.
     final waitFrom = _replyWaitFrom;
@@ -2337,6 +2351,7 @@ class LiveController extends Notifier<LiveUiState> {
           _log('[Lazarus] mic: en pausa mientras habla TalkBack');
         }
         _screenReaderSpeaking = true;
+        _screenReaderLastAt = DateTime.now();
         return;
       }
       _screenReaderTail?.cancel();
@@ -2346,6 +2361,7 @@ class LiveController extends Notifier<LiveUiState> {
         }
         _screenReaderSpeaking = false;
         _screenReaderTail = null;
+        _screenReaderLastAt = DateTime.now();
         // Con TalkBack, la pregunta de Detener la dice el lector de pantalla.
         if (_stopArmedAt != null) {
           _stopQuestionEndedAt = ref.read(liveClockProvider)();

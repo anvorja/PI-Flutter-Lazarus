@@ -76,6 +76,9 @@ void main() {
         observeTimeoutProvider.overrideWithValue(
           const Duration(milliseconds: 1200),
         ),
+        screenReaderObserveQuietProvider.overrideWithValue(
+          const Duration(milliseconds: 1500),
+        ),
       ],
     );
     addTearDown(container.dispose);
@@ -208,6 +211,23 @@ void main() {
     controller().requestStop();
     await wait(1500);
     expect(session.observes, 0);
+  });
+
+  test('con TalkBack hablando, y hasta un rato después, no observa '
+      '(27-oct: el asistente describía encima de TalkBack mientras la persona '
+      'buscaba Detener)', () async {
+    media.screenReaderSpeaking.add(true);
+    await wait(1100);
+    expect(session.observes, 0, reason: 'TalkBack está hablando');
+    media.screenReaderSpeaking.add(false);
+    await wait(900);
+    expect(session.observes, 0, reason: 'la persona sigue explorando');
+    await wait(1500);
+    expect(
+      session.observes,
+      1,
+      reason: 'pasado el silencio, vuelve a observar',
+    );
   });
 
   test('Detener apaga el ciclo', () async {

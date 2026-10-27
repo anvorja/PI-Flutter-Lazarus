@@ -261,6 +261,14 @@ final observeReplyWaitProvider = Provider<Duration>(
   (ref) => const Duration(seconds: 12),
 );
 
+/// Con TalkBack, cuánto se espera tras su última lectura antes de volver a
+/// observar: la persona está explorando la pantalla y la voz del asistente se
+/// cruzaba con la de TalkBack (prueba del 27-oct: describía cada 6 s mientras
+/// la persona buscaba el botón Detener).
+final screenReaderObserveQuietProvider = Provider<Duration>(
+  (ref) => const Duration(seconds: 10),
+);
+
 /// Pausa tras una respuesta a la persona antes de volver a observar: suele
 /// seguir hablando (en la prueba, preguntas seguidas por la licuadora).
 final observeAfterReplyProvider = Provider<Duration>(
