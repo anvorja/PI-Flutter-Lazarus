@@ -461,6 +461,11 @@ class FakeDeviceAccess implements DeviceAccessRepository {
   @override
   Future<String?> token() async => deviceToken;
 
+  int registerAgainChecks = 0;
+
+  @override
+  Future<void> registerAgainIfUnknown() async => registerAgainChecks++;
+
   @override
   Future<bool> uploadRequested() async => requested;
 

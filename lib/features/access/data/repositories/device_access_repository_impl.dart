@@ -24,10 +24,16 @@ class DeviceAccessRepositoryImpl implements DeviceAccessRepository {
   DeviceAccessRepositoryImpl(
     this._prefs, [
     this._channel = const MethodChannel('lazarus/session'),
+    this._baseUrl = backendUrl,
   ]);
 
   final SharedPreferences _prefs;
   final MethodChannel _channel;
+  final String _baseUrl;
+
+  /// Registro en curso: la sesión y el aviso de "pendiente" pueden pedirlo a
+  /// la vez, y dos registros dejarían dos filas en el panel.
+  Future<String?>? _registering;
 
   @override
   String? get savedToken => _prefs.getString(deviceTokenKey);
@@ -36,6 +42,25 @@ class DeviceAccessRepositoryImpl implements DeviceAccessRepository {
   Future<String?> token() async {
     final saved = _prefs.getString(deviceTokenKey);
     if (saved != null && saved.isNotEmpty) return saved;
+    return _registering ??= _register().whenComplete(() => _registering = null);
+  }
+
+  @override
+  Future<void> registerAgainIfUnknown() async {
+    final saved = _prefs.getString(deviceTokenKey);
+    if (saved != null) {
+      try {
+        await _send('GET', '/api/v1/devices/me', token: saved);
+        return; // el panel lo conoce: de verdad espera la aprobación
+      } on Object catch (e) {
+        // Sin red no se sabe: se deja como está.
+        if (!await _forgetIfUnknown(e)) return;
+      }
+    }
+    await token();
+  }
+
+  Future<String?> _register() async {
     try {
       final info = await _deviceInfo();
       final body = await _send('POST', '/api/v1/devices/register', json: info);
@@ -116,13 +141,13 @@ class DeviceAccessRepositoryImpl implements DeviceAccessRepository {
 
   /// El backend ya no conoce el token (prueba del 21-oct: HTTP 401 al subir,
   /// p. ej. porque el teléfono se eliminó en el panel). Se olvida, y la próxima
-  /// sesión registra el teléfono de nuevo, pendiente de aprobación.
-  Future<void> _forgetIfUnknown(Object error) async {
-    if (error is! HttpException || error.message != 'HTTP 401') return;
+  /// sesión registra el teléfono de nuevo, pendiente de aprobación. `true` si
+  /// lo olvidó.
+  Future<bool> _forgetIfUnknown(Object error) async {
+    if (error is! HttpException || error.message != 'HTTP 401') return false;
     await _prefs.remove(deviceTokenKey);
-    liveLog(
-      '[Lazarus] el panel no conoce este teléfono: se registra de nuevo en la próxima sesión',
-    );
+    liveLog('[Lazarus] el panel no conoce este teléfono: se registra de nuevo');
+    return true;
   }
 
   Future<Map<String, String>> _deviceInfo() async {
@@ -148,7 +173,7 @@ class DeviceAccessRepositoryImpl implements DeviceAccessRepository {
   }) async {
     final http = HttpClient()..connectionTimeout = _timeout;
     try {
-      final request = await http.openUrl(method, Uri.parse('$backendUrl$path'));
+      final request = await http.openUrl(method, Uri.parse('$_baseUrl$path'));
       if (token != null) request.headers.set('X-Device-Token', token);
       if (json != null) {
         request.headers.contentType = ContentType.json;
@@ -183,7 +208,7 @@ class DeviceAccessRepositoryImpl implements DeviceAccessRepository {
     final http = HttpClient()..connectionTimeout = _timeout;
     try {
       final request = await http.postUrl(
-        Uri.parse('$backendUrl/api/v1/devices/me/logs'),
+        Uri.parse('$_baseUrl/api/v1/devices/me/logs'),
       );
       request.headers
         ..set('X-Device-Token', token)

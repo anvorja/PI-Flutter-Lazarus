@@ -1628,6 +1628,11 @@ class LiveController extends Notifier<LiveUiState> {
       case LiveCloseCause.devicePending:
         state = state.copyWith(status: LiveStatus.error);
         _announce(LiveNotice.devicePending);
+        // El servidor dice "pendiente" también si ya no conoce el token
+        // (27-oct: el Xiaomi no salía en el panel hasta tocar Detener).
+        unawaited(
+          ref.read(deviceAccessRepositoryProvider).registerAgainIfUnknown(),
+        );
       case LiveCloseCause.deviceDisabled:
         state = state.copyWith(status: LiveStatus.error);
         _announce(LiveNotice.deviceDisabled);
