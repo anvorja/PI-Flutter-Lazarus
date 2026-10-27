@@ -10,6 +10,11 @@ abstract class DeviceAccessRepository {
   /// (sin red o con un backend anterior): la sesión sigue sin él.
   Future<String?> token();
 
+  /// El servidor cerró la sesión como "pendiente": si el panel ya no conoce
+  /// este teléfono (p. ej. se eliminó), lo registra de nuevo ya, para que
+  /// aparezca en el panel sin tener que tocar Detener e iniciar otra vez.
+  Future<void> registerAgainIfUnknown();
+
   /// ¿El panel pidió subir los logs? `false` si no se sabe.
   Future<bool> uploadRequested();
 

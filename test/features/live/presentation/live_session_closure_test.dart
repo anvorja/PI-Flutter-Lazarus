@@ -195,6 +195,21 @@ void main() {
       });
     }
 
+    test('pendiente: revisa si el panel aún conoce el teléfono, sin esperar '
+        'a Detener (27-oct)', () async {
+      await openSession();
+      session.emitClose(LiveCloseCause.devicePending);
+      await settle();
+      expect(deviceAccess.registerAgainChecks, 1);
+    });
+
+    test('deshabilitado: no se registra de nuevo', () async {
+      await openSession();
+      session.emitClose(LiveCloseCause.deviceDisabled);
+      await settle();
+      expect(deviceAccess.registerAgainChecks, 0);
+    });
+
     test('cerrada desde el panel pero sin código (Render): pregunta la causa '
         'con su token, lo dice, no reintenta y sube los logs', () async {
       await openSession();
