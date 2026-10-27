@@ -17,6 +17,7 @@ const String _verbosityKey = 'lazarus_verbosity';
 const String _describingKey = 'lazarus_describing';
 const String _cuesMutedKey = 'lazarus_system_cues_muted';
 const String _batteryAskedKey = 'lazarus_battery_exemption_asked';
+const String _sessionStartKey = 'lazarus_last_session_start';
 
 const String defaultAssistantName = 'Aria';
 
@@ -98,4 +99,15 @@ class LiveSettingsRepositoryImpl implements LiveSettingsRepository {
   @override
   Future<void> setBatteryExemptionAsked() =>
       _prefs.setBool(_batteryAskedKey, true);
+
+  @override
+  DateTime? getLastSessionStart() {
+    final ms = _prefs.getInt(_sessionStartKey);
+    return ms == null ? null : DateTime.fromMillisecondsSinceEpoch(ms);
+  }
+
+  @override
+  Future<void> setLastSessionStart(DateTime? at) => at == null
+      ? _prefs.remove(_sessionStartKey)
+      : _prefs.setInt(_sessionStartKey, at.millisecondsSinceEpoch);
 }

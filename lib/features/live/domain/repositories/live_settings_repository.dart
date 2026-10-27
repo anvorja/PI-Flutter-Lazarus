@@ -50,8 +50,14 @@ abstract class LiveSettingsRepository {
   bool getSystemCuesMuted();
   Future<void> setSystemCuesMuted(bool muted);
 
-  /// Si ya se pidió excluir a Lazarus de la optimización de batería (HU-017):
-  /// se pide una sola vez.
+  /// Si ya se pidió excluir a Lazarus de la optimización de batería (HU-017).
+  /// Se vuelve a pedir solo si Android cerró la app en una sesión.
   bool getBatteryExemptionAsked();
   Future<void> setBatteryExemptionAsked();
+
+  /// Cuándo empezó la sesión que sigue abierta; Detener lo borra (`null`). Si
+  /// al volver queda una hora y Android cerró la app después, esa sesión no
+  /// terminó con Detener (HU-017).
+  DateTime? getLastSessionStart();
+  Future<void> setLastSessionStart(DateTime? at);
 }
