@@ -8,6 +8,7 @@ import 'package:app/features/live/domain/entities/live_message.dart';
 import 'package:app/features/live/presentation/controllers/live_controller.dart';
 import 'package:app/features/live/presentation/providers/live_providers.dart';
 import 'package:app/features/location/presentation/providers/location_providers.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -16,6 +17,7 @@ import '../../../support/fakes.dart';
 
 void main() {
   late FakeLiveSessionRepository session;
+  late FakeMediaRepository media;
   late List<String> announcements;
   late ProviderContainer container;
   late FakeDeviceAccess deviceAccess;
@@ -25,6 +27,7 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();
     session = FakeLiveSessionRepository();
+    media = FakeMediaRepository();
     announcements = [];
     deviceAccess = FakeDeviceAccess();
     now = DateTime(2026, 10, 24, 10);
@@ -33,7 +36,7 @@ void main() {
         sharedPreferencesProvider.overrideWithValue(prefs),
         liveSessionRepositoryProvider.overrideWithValue(session),
         networkStatusRepositoryProvider.overrideWithValue(FakeNetworkStatus()),
-        mediaRepositoryProvider.overrideWithValue(FakeMediaRepository()),
+        mediaRepositoryProvider.overrideWithValue(media),
         backgroundSessionRepositoryProvider.overrideWithValue(
           FakeBackgroundSession(),
         ),
@@ -310,22 +313,34 @@ void main() {
   });
 
   group('Detener con confirmación (jornadas del 24 y el 26-oct)', () {
-    test('el segundo toque dentro de 8 s detiene', () async {
+    ValueNotifier<bool> phoneVoice() =>
+        container.read(announcerSpeakingProvider);
+
+    /// El teléfono dice la pregunta durante [seconds] y termina.
+    void questionLasts(double seconds) {
+      phoneVoice().value = true;
+      now = now.add(Duration(milliseconds: (seconds * 1000).round()));
+      phoneVoice().value = false;
+    }
+
+    test('el segundo toque mientras suena la pregunta detiene', () async {
       await openSession();
       controller().requestStop();
       expect(announcements, [notice(LiveNotice.stopConfirm)]);
       expect(state().isLive, isTrue);
-      now = now.add(const Duration(seconds: 3));
+      phoneVoice().value = true;
+      now = now.add(const Duration(seconds: 2));
       controller().requestStop();
       expect(state().isLive, isFalse);
       expect(announcements.last, notice(LiveNotice.stopped));
     });
 
-    test('quien espera a que termine la pregunta (6 s) detiene al tocar, '
-        'sin oírla otra vez', () async {
+    test('26-oct: la pregunta tardó 6,8 s en terminar y el toque 1,4 s '
+        'después detiene sin repetirla', () async {
       await openSession();
       controller().requestStop();
-      now = now.add(const Duration(seconds: 6));
+      questionLasts(6.8);
+      now = now.add(const Duration(milliseconds: 1400));
       controller().requestStop();
       expect(state().isLive, isFalse);
       expect(
@@ -334,7 +349,34 @@ void main() {
       );
     });
 
-    test('pasados 8 s, el toque vuelve a preguntar', () async {
+    test(
+      'pasados 4 s desde que terminó la pregunta, vuelve a preguntar',
+      () async {
+        await openSession();
+        controller().requestStop();
+        questionLasts(3.5);
+        now = now.add(const Duration(seconds: 5));
+        controller().requestStop();
+        expect(state().isLive, isTrue);
+        expect(announcements, [
+          notice(LiveNotice.stopConfirm),
+          notice(LiveNotice.stopConfirm),
+        ]);
+      },
+    );
+
+    test(
+      'sin aviso de fin de la pregunta, cuenta 8 s desde el primer toque',
+      () async {
+        await openSession();
+        controller().requestStop();
+        now = now.add(const Duration(seconds: 6));
+        controller().requestStop();
+        expect(state().isLive, isFalse);
+      },
+    );
+
+    test('sin aviso de fin, pasados 8 s vuelve a preguntar', () async {
       await openSession();
       controller().requestStop();
       now = now.add(const Duration(seconds: 9));
@@ -344,6 +386,35 @@ void main() {
         notice(LiveNotice.stopConfirm),
         notice(LiveNotice.stopConfirm),
       ]);
+    });
+
+    test('mientras se confirma, el asistente calla: se corta lo que decía y '
+        'no suena lo que llega', () async {
+      await openSession();
+      session.emitResponse(
+        const LiveResponse(type: LiveResponseType.audio, data: 'AAAA'),
+      );
+      await settle();
+      expect(media.played, hasLength(1));
+
+      controller().requestStop();
+      expect(media.interruptions, 1);
+      phoneVoice().value = true;
+      session.emitResponse(
+        const LiveResponse(type: LiveResponseType.audio, data: 'BBBB'),
+      );
+      await settle();
+      expect(media.played, hasLength(1), reason: 'no habla encima');
+
+      // Sin confirmar: pasado el plazo, el asistente vuelve a sonar.
+      phoneVoice().value = false;
+      now = now.add(const Duration(seconds: 5));
+      session.emitResponse(
+        const LiveResponse(type: LiveResponseType.audio, data: 'CCCC'),
+      );
+      await settle();
+      expect(media.played, hasLength(2));
+      expect(state().isLive, isTrue);
     });
 
     test('un toque de más justo después de Detener no abre otra sesión; '

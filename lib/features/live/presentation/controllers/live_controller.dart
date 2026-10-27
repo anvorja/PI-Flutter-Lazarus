@@ -1750,45 +1750,103 @@ class LiveController extends Notifier<LiveUiState> {
     }
   }
 
-  /// Tiempo para confirmar Detener con el segundo toque, contado desde el
-  /// primero. Decir la pregunta toma unos 3,5 s: con 4 s, quien esperaba a que
-  /// terminara para tocar oía la pregunta otra vez (26-oct). Quedan unos 4 s
-  /// para tocar después de oírla.
-  static const Duration stopConfirmWindow = Duration(seconds: 8);
+  /// Tiempo para confirmar Detener después de que termina la pregunta. El
+  /// 26-oct la pregunta tardó 6,8 s en terminar porque el asistente habló
+  /// encima: una ventana contada desde el primer toque volvía a preguntar a
+  /// quien esperaba a oírla entera.
+  static const Duration stopConfirmWindow = Duration(seconds: 4);
+
+  /// Si no se supo cuándo terminó la pregunta (el motor de voz no avisó), se
+  /// cuenta desde el primer toque: la pregunta y unos 4 s para reaccionar.
+  static const Duration stopConfirmFallback = Duration(seconds: 8);
+
+  /// Tope: aunque la pregunta siga sonando, pasado este tiempo se vuelve a
+  /// preguntar.
+  static const Duration stopConfirmMax = Duration(seconds: 20);
+
   DateTime? _stopArmedAt;
+  DateTime? _stopQuestionEndedAt;
 
   /// Tras Detener, el botón desaparece y la pantalla entera vuelve a iniciar:
   /// un toque de más en este tiempo no abre otra sesión (26-oct).
   static const Duration restartGuard = Duration(milliseconds: 1500);
   DateTime? _stoppedByButtonAt;
 
-  /// Botón Detener: el primer toque pregunta y el segundo, dentro de
-  /// [stopConfirmWindow], detiene. En la jornada del 24-oct un participante con
-  /// TalkBack detuvo la app 11 veces en 40 min sin querer.
+  /// Si un toque de Detener ahora confirmaría: mientras suena la pregunta y
+  /// hasta [stopConfirmWindow] después de que termine.
+  bool _stopConfirmOpen(DateTime now) {
+    final armed = _stopArmedAt;
+    if (armed == null) return false;
+    final sinceArmed = now.difference(armed);
+    if (sinceArmed > stopConfirmMax) return false;
+    if (ref.read(announcerSpeakingProvider).value || _screenReaderSpeaking) {
+      return true;
+    }
+    final ended = _stopQuestionEndedAt;
+    return ended != null
+        ? now.difference(ended) <= stopConfirmWindow
+        : sinceArmed <= stopConfirmFallback;
+  }
+
+  /// La voz del teléfono terminó un aviso mientras se espera la confirmación.
+  void _onAnnouncerSpeaking() {
+    if (_stopArmedAt == null || ref.read(announcerSpeakingProvider).value) {
+      return;
+    }
+    _stopQuestionEndedAt = ref.read(liveClockProvider)();
+  }
+
+  void _disarmStop() {
+    if (_stopArmedAt == null) return;
+    _stopArmedAt = null;
+    _stopQuestionEndedAt = null;
+    ref.read(announcerSpeakingProvider).removeListener(_onAnnouncerSpeaking);
+  }
+
+  /// Botón Detener: el primer toque pregunta y el segundo, mientras suena la
+  /// pregunta o poco después, detiene. En la jornada del 24-oct un participante
+  /// con TalkBack detuvo la app 11 veces en 40 min sin querer. Mientras se
+  /// confirma, el asistente calla para que la pregunta se oiga sola.
   void requestStop() {
     final now = ref.read(liveClockProvider)();
-    final armed = _stopArmedAt;
-    if (armed != null && now.difference(armed) <= stopConfirmWindow) {
-      _stopArmedAt = null;
+    if (_stopConfirmOpen(now)) {
+      _disarmStop();
       _log('[Lazarus] Detener confirmado con el botón');
       disconnect();
       _stoppedByButtonAt = now;
       return;
     }
+    _disarmStop();
     _stopArmedAt = now;
+    ref.read(announcerSpeakingProvider).addListener(_onAnnouncerSpeaking);
     final talkBack = ref.read(screenReaderActiveProvider)();
     _log(
       '[Lazarus] Detener: primer toque, se pide confirmación '
       '(${talkBack ? "con" : "sin"} TalkBack)',
     );
+    _quietAssistantForStop();
     _announce(LiveNotice.stopConfirm);
+  }
+
+  /// Corta lo que el asistente esté diciendo; lo que siga llegando mientras se
+  /// confirma Detener se descarta y no se envía `[OBSERVA]`.
+  void _quietAssistantForStop() {
+    _endObserve();
+    if (!_assistantActive) return;
+    _log('[Lazarus] Detener: el asistente calla mientras se confirma');
+    _logAssistantSaid(' (cortado: se pidió Detener)');
+    _assistantActive = false;
+    _assistantTurnDone = false;
+    _drainFallback?.cancel();
+    _queuedAudioMs = 0;
+    unawaited(_media.interruptPlayback());
   }
 
   /// Botón Detener: cierra la sesión; la próxima empieza con la presentación.
   /// Botón Detener: cierra la sesión, libera micrófono y cámara y avisa con una
   /// frase corta (sin reconectar).
   void disconnect() {
-    _stopArmedAt = null;
+    _disarmStop();
     // Terminó con Detener: si Android cierra la app después, no es un corte.
     unawaited(_settings.setLastSessionStart(null));
     // Logs de campo al panel (HU-045): lo nuevo desde la última subida.
@@ -1984,6 +2042,9 @@ class LiveController extends Notifier<LiveUiState> {
         _handleToolCall(call);
       case LiveResponseType.audio:
         final pcm = message.data as String;
+        // Mientras se confirma Detener, el asistente no habla encima de la
+        // pregunta (26-oct).
+        if (_stopConfirmOpen(ref.read(liveClockProvider)())) return;
         // Modo reunión: calla salvo que lo llamen por su nombre. El audio se
         // retiene hasta saberlo (la transcripción puede llegar después).
         if (state.meetingMode && !_turnAllowed) {
@@ -2170,6 +2231,7 @@ class LiveController extends Notifier<LiveUiState> {
     if (_cameraPaused) return;
     if (_assistantActive) return;
     if (ref.read(sosControllerProvider) != SosStatus.idle) return;
+    if (_stopConfirmOpen(ref.read(liveClockProvider)())) return;
     final now = DateTime.now();
     // Se espera una respuesta (o un tiempo máximo) antes de observar, para no
     // cortarla; y tras una respuesta, una pausa por si la persona sigue.
@@ -2284,6 +2346,10 @@ class LiveController extends Notifier<LiveUiState> {
         }
         _screenReaderSpeaking = false;
         _screenReaderTail = null;
+        // Con TalkBack, la pregunta de Detener la dice el lector de pantalla.
+        if (_stopArmedAt != null) {
+          _stopQuestionEndedAt = ref.read(liveClockProvider)();
+        }
       });
     });
   }
