@@ -11,7 +11,12 @@ import 'route_profile.dart';
 /// Cada cuánto se revisa la ruta activa: el GPS da una posición cada ~2 s.
 const Duration routeCheckInterval = Duration(seconds: 2);
 
-enum RouteEventKind { approaching, arrived, finished }
+/// Cuánto espera una ruta pedida sin GPS confiable antes de desistir.
+const Duration routeGpsWait = Duration(minutes: 5);
+
+/// `passed`: la persona ya va hacia el punto que sigue sin haber entrado al
+/// radio de este; la guía avanza sin anunciarlo.
+enum RouteEventKind { approaching, arrived, passed, finished }
 
 @immutable
 class RouteEvent {
@@ -30,7 +35,10 @@ class RouteEvent {
 }
 
 class RouteGuide {
-  RouteGuide(this.profile);
+  /// [startAt]: el punto desde el que se guía; al retomar una ruta a mitad de
+  /// camino es el más cercano a la persona ([nearestPointIndex]).
+  RouteGuide(this.profile, {int startAt = 0})
+    : _next = startAt.clamp(0, profile.points.length);
 
   final RouteProfile profile;
 
@@ -38,8 +46,19 @@ class RouteGuide {
   /// señal no detiene la guía.
   static const int lookAhead = 3;
 
-  int _next = 0;
+  /// Tope del radio de llegada cuando el GPS es menos preciso que el radio
+  /// del perfil. El 27-oct, con una precisión de 8–9 m, un radio de 4 m dejó
+  /// la guía esperando un punto que la persona pasó a 24 m.
+  static const double maxArriveM = 10;
+
+  int _next;
   int? _approached;
+
+  /// Último punto alcanzado o dado por pasado; `null` al empezar o al retomar.
+  int? _last;
+
+  /// Índice del siguiente punto por alcanzar.
+  int get nextIndex => _next;
 
   bool get finished => _next >= profile.points.length;
 
@@ -58,7 +77,8 @@ class RouteGuide {
         p.latitude,
         p.longitude,
       );
-      if (d <= p.arriveM) {
+      if (d <= arriveRadius(p, fix) && (i == _next || _advanced(fix))) {
+        _last = i;
         _next = i + 1;
         // El aviso de llegada ya nombra el siguiente punto: si está cerca, no
         // se anuncia otra vez al acercarse.
@@ -88,12 +108,90 @@ class RouteGuide {
       p.latitude,
       p.longitude,
     );
+    if (_next + 1 < points.length) {
+      // Pasó de largo: está más cerca del punto que sigue que el propio punto
+      // pendiente (con [maxArriveM] de margen, para no adelantarse a una
+      // llegada), sin haberse alejado de este.
+      final n = points[_next + 1];
+      final toNext = distanceMeters(
+        fix.latitude,
+        fix.longitude,
+        n.latitude,
+        n.longitude,
+      );
+      final span = distanceMeters(
+        p.latitude,
+        p.longitude,
+        n.latitude,
+        n.longitude,
+      );
+      if (toNext < span - maxArriveM &&
+          d <= 2 * p.approachM &&
+          _advanced(fix)) {
+        final passed = _next;
+        _last = passed;
+        _next++;
+        return RouteEvent(RouteEventKind.passed, passed, profile);
+      }
+    }
     if (d <= p.approachM && _approached != _next) {
       _approached = _next;
       return RouteEvent(RouteEventKind.approaching, _next, profile);
     }
     return null;
   }
+
+  /// Si la persona ya se alejó del último punto lo que mide el tramo hasta el
+  /// pendiente (con [maxArriveM] de margen). Sin esto no se salta un punto: en
+  /// un tramo en U el punto de después queda cerca del anterior, y el 27-oct
+  /// la guía dio por pasado el 7 de la vuelta (y su "gira a la izquierda")
+  /// cuando la persona seguía en el 6.
+  bool _advanced(LocationFix fix) {
+    final last = _last;
+    if (last == null) return true;
+    final a = profile.points[last];
+    final b = profile.points[_next];
+    final moved = distanceMeters(
+      fix.latitude,
+      fix.longitude,
+      a.latitude,
+      a.longitude,
+    );
+    final span = distanceMeters(
+      a.latitude,
+      a.longitude,
+      b.latitude,
+      b.longitude,
+    );
+    return moved >= span - maxArriveM;
+  }
+
+  /// Radio de llegada a [p]: el del perfil o la precisión del GPS, si es
+  /// mayor, hasta [maxArriveM].
+  static double arriveRadius(RoutePoint p, LocationFix fix) {
+    final gps = fix.accuracyM.clamp(0, maxArriveM).toDouble();
+    return p.arriveM > gps ? p.arriveM : gps;
+  }
+}
+
+/// Índice del punto del perfil más cercano a [fix].
+int nearestPointIndex(RouteProfile profile, LocationFix fix) {
+  var best = 0;
+  var bestD = double.infinity;
+  for (var i = 0; i < profile.points.length; i++) {
+    final p = profile.points[i];
+    final d = distanceMeters(
+      fix.latitude,
+      fix.longitude,
+      p.latitude,
+      p.longitude,
+    );
+    if (d < bestD) {
+      best = i;
+      bestD = d;
+    }
+  }
+  return best;
 }
 
 /// Mensaje `[RUTA]` para el asistente, en inglés como las demás respuestas de
@@ -128,6 +226,8 @@ String describeRouteEvent(
 
   final p = event.point;
   switch (event.kind) {
+    case RouteEventKind.passed:
+      return "passed point $number of $total: '${p.name}' without reaching it.";
     case RouteEventKind.approaching:
       return "approaching point $number of $total: '${p.name}', ${where(p)}."
           '${details(p)}';
@@ -151,20 +251,20 @@ String _crossingName(RouteCrossing crossing) => switch (crossing) {
   RouteCrossing.uncontrolled => 'uncontrolled crossing',
 };
 
-/// El perfil que empieza cerca de la posición (a [maxStartM] o menos de su
-/// primer punto), prefiriendo el que va al destino que dijo la persona.
+/// El perfil que pasa cerca de la posición (a [maxStartM] o menos de alguno
+/// de sus puntos, para poder retomarlo a mitad de camino), prefiriendo el que
+/// va al destino que dijo la persona.
 RouteProfile? pickRoute(
   List<RouteProfile> profiles,
   LocationFix fix,
   String destination, {
   double maxStartM = 250,
 }) {
-  double startDistance(RouteProfile r) => distanceMeters(
-    fix.latitude,
-    fix.longitude,
-    r.points.first.latitude,
-    r.points.first.longitude,
-  );
+  double startDistance(RouteProfile r) {
+    final p = r.points[nearestPointIndex(r, fix)];
+    return distanceMeters(fix.latitude, fix.longitude, p.latitude, p.longitude);
+  }
+
   final near = [
     for (final r in profiles)
       if (startDistance(r) <= maxStartM) r,
@@ -173,7 +273,8 @@ RouteProfile? pickRoute(
   final words = _words(destination);
   if (words.isNotEmpty) {
     for (final r in near) {
-      final target = _words('${r.destination} ${r.name}');
+      // Solo el destino: el nombre de la vuelta también nombra el origen.
+      final target = _words(r.destination);
       if (words.any(target.contains)) return r;
     }
   }
@@ -187,6 +288,7 @@ Set<String> _words(String text) {
   for (var i = 0; i < from.length; i++) {
     t = t.replaceAll(from[i], to[i]);
   }
+  t = t.replaceAll('universidad del valle', 'univalle');
   return {
     for (final w in t.split(RegExp(r'[^a-z0-9]+')))
       if (w.length >= 4) w,

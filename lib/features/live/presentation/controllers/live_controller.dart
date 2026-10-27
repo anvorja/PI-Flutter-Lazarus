@@ -1034,6 +1034,11 @@ class LiveController extends Notifier<LiveUiState> {
   RouteGuide? _routeGuide;
   Timer? _routeWatch;
 
+  /// La persona pidió una ruta sin GPS confiable: la app la arranca sola en
+  /// cuanto el GPS lo sea, hasta [routeGpsWait] después del pedido.
+  String? _pendingRouteDestination;
+  DateTime? _pendingRouteSince;
+
   /// Ya se consultó si el panel pidió los logs en esta sesión (HU-045).
   bool _uploadChecked = false;
 
@@ -1140,7 +1145,9 @@ class LiveController extends Notifier<LiveUiState> {
   void _teardown() {
     _routeAWatch?.cancel();
     _routeAWatch = null;
-    _stopRouteGuide();
+    // La ruta guiada no se corta con la sesión: sigue tras reconectar, al
+    // bloquear la pantalla o al cambiar de idioma. Solo Detener y stop_route
+    // la terminan. El 27-oct un corte la borró antes del cruce de la Quinta.
     _cameraSwitch?.cancel();
     _cameraSwitch = null;
     _stopObserving();
@@ -1863,6 +1870,7 @@ class LiveController extends Notifier<LiveUiState> {
       ref.read(sosControllerProvider.notifier).cancel();
     }
     _teardown();
+    _stopRouteGuide();
     _stopBackground();
     _endTelemetry('stopped');
     _routeAOffered = false;
@@ -1964,6 +1972,8 @@ class LiveController extends Notifier<LiveUiState> {
           const Duration(seconds: 30),
           (_) => checkRouteA(),
         );
+        final routeGoesOn =
+            _pendingKickoff != _PendingKickoff.intro && _routeGuide != null;
         switch (_pendingKickoff) {
           case _PendingKickoff.voice:
             _expectReply();
@@ -1985,6 +1995,8 @@ class LiveController extends Notifier<LiveUiState> {
             _session.sendKickoff();
         }
         _pendingKickoff = _PendingKickoff.intro;
+        // La sesión nueva del asistente no sabe que hay una ruta en curso.
+        if (routeGoesOn) _sendRouteGoesOn();
         _markActivity();
         _startMedia();
         // La pantalla cambió mientras se conectaba.
@@ -2486,37 +2498,61 @@ class LiveController extends Notifier<LiveUiState> {
     _log('[Lazarus] ruta: ${_routes.length} perfiles disponibles');
   }
 
-  /// Respuesta de `start_route` (HU-022): elige el perfil que empieza cerca.
+  /// Respuesta de `start_route` (HU-022): elige el perfil que pasa cerca y lo
+  /// retoma en el punto más cercano. Sin GPS confiable, deja el pedido en
+  /// espera y la ruta arranca sola cuando el GPS lo sea.
   String _startRoute(String destination) {
     final location = ref.read(locationControllerProvider);
     final fix = location.fix;
     if (fix == null || location.reliability != GpsReliability.reliable) {
-      _log('[Lazarus] ruta: no se inicia, GPS no confiable');
-      return 'no_gps: the GPS is not reliable right now, so the route cannot '
-          'start. Tell the person in one short sentence and suggest trying '
-          'again in the open in a moment.';
+      if (_routes.isEmpty) return _noRoute();
+      _stopRouteGuide();
+      _pendingRouteDestination = destination;
+      _pendingRouteSince = ref.read(liveClockProvider)();
+      _routeWatch = Timer.periodic(routeCheckInterval, (_) => checkRoute());
+      _log('[Lazarus] ruta: en espera de GPS confiable');
+      return 'waiting_gps: the GPS is not reliable yet. The app will start '
+          "the route by itself as soon as it is, and will send '[RUTA]'. Tell "
+          'the person in one short sentence to keep going with their companion; '
+          'do not describe the route.';
     }
-    final route = pickRoute(_routes, fix, destination);
-    if (route == null) {
-      _log(
-        '[Lazarus] ruta: ningún perfil empieza cerca (${_routes.length} cargados)',
-      );
-      return 'none: there is no curated route loaded that starts near here. '
-          'Tell the person in one sentence and keep NO ROUTES.';
-    }
-    _stopRouteGuide();
-    _routeGuide = RouteGuide(route);
+    final started = _beginRoute(destination, fix);
+    if (started == null) return _noRoute();
     _routeWatch = Timer.periodic(routeCheckInterval, (_) => checkRoute());
+    return started;
+  }
+
+  String _noRoute() {
     _log(
-      '[Lazarus] ruta: iniciada "${route.slug}" (${route.points.length} puntos, '
-      '${route.validatedInField ? "validada" : "sin validar"})',
+      '[Lazarus] ruta: ningún perfil pasa cerca (${_routes.length} cargados)',
+    );
+    return 'none: there is no curated route loaded that starts near here. '
+        'Tell the person in one sentence and keep NO ROUTES.';
+  }
+
+  /// Arranca la guía en el punto del perfil más cercano y devuelve qué decirle
+  /// al asistente, o `null` si ningún perfil pasa cerca.
+  String? _beginRoute(String destination, LocationFix fix) {
+    final route = pickRoute(_routes, fix, destination);
+    if (route == null) return null;
+    final startAt = nearestPointIndex(route, fix);
+    _routeGuide = RouteGuide(route, startAt: startAt);
+    final total = route.points.length;
+    _log(
+      '[Lazarus] ruta: iniciada "${route.slug}" ($total puntos, '
+      '${route.validatedInField ? "validada" : "sin validar"}'
+      '${startAt > 0 ? ", desde el punto ${startAt + 1}" : ""})',
     );
     final warning = route.validatedInField
         ? ''
         : 'not validated: it is a test route; tell the person it must only be '
               'used with a companion. ';
+    final resume = startAt > 0
+        ? "Resuming at point ${startAt + 1} of $total, "
+              "'${route.points[startAt].name}', the closest to the person. "
+        : '';
     return "ok: guiding along '${route.name}', from ${route.origin} to "
-        '${route.destination}, ${route.points.length} points. $warning'
+        '${route.destination}, $total points. $resume$warning'
         "The app will send '[RUTA]' at each point: do not describe the route "
         'yourself.';
   }
@@ -2525,15 +2561,23 @@ class LiveController extends Notifier<LiveUiState> {
     _routeWatch?.cancel();
     _routeWatch = null;
     _routeGuide = null;
+    _pendingRouteDestination = null;
+    _pendingRouteSince = null;
   }
 
   /// Avanza la ruta activa con la última posición y, si llegó o se acerca a un
   /// punto, se lo pasa al asistente (HU-022). En modo reunión solo pasan los
-  /// cruces y los riesgos altos.
+  /// cruces y los riesgos altos. Si la ruta espera el GPS, la arranca cuando
+  /// es confiable.
   @visibleForTesting
   void checkRoute() {
+    if (!ref.mounted || !_session.connected) return;
+    if (_pendingRouteDestination != null) {
+      _startPendingRoute();
+      return;
+    }
     final guide = _routeGuide;
-    if (guide == null || !ref.mounted || !_session.connected) return;
+    if (guide == null) return;
     final location = ref.read(locationControllerProvider);
     final fix = location.fix;
     if (fix == null) return;
@@ -2547,6 +2591,10 @@ class LiveController extends Notifier<LiveUiState> {
           .clockHourTowards(p.latitude, p.longitude),
     );
     if (guide.finished) _stopRouteGuide();
+    if (event.kind == RouteEventKind.passed) {
+      _log('[Lazarus] ruta (sin aviso): $message');
+      return;
+    }
     final point = event.point;
     if (state.meetingMode &&
         point.crossing == null &&
@@ -2555,11 +2603,63 @@ class LiveController extends Notifier<LiveUiState> {
       return;
     }
     _log('[Lazarus] ruta: $message');
+    _sendRoute(message);
+  }
+
+  void _sendRouteGoesOn() {
+    final guide = _routeGuide!;
+    final total = guide.profile.points.length;
+    final next = guide.nextPoint;
+    _log('[Lazarus] ruta: sigue tras la sesión nueva "${guide.profile.slug}"');
+    _sendRoute(
+      "still guiding: the app is still guiding along '${guide.profile.name}'"
+      '${next == null ? '' : ". Next: point ${guide.nextIndex + 1} of $total, '${next.name}'"}. '
+      'Tell the person in one short sentence that the route guidance goes on. '
+      "The app will keep sending '[RUTA]' at each point: do not describe the "
+      'route yourself.',
+    );
+  }
+
+  void _sendRoute(String message) {
     _afterAssistantAudio(() {
       if (!ref.mounted || !_session.connected) return;
       _expectReply();
       _session.sendRouteGuide(message);
     });
+  }
+
+  void _startPendingRoute() {
+    final destination = _pendingRouteDestination!;
+    final location = ref.read(locationControllerProvider);
+    final fix = location.fix;
+    if (fix == null || location.reliability != GpsReliability.reliable) {
+      final since = _pendingRouteSince;
+      if (since != null &&
+          ref.read(liveClockProvider)().difference(since) >= routeGpsWait) {
+        _stopRouteGuide();
+        _log('[Lazarus] ruta: no se inició, el GPS no fue confiable a tiempo');
+        _sendRoute(
+          'not started: the GPS was not reliable for '
+          '${routeGpsWait.inMinutes} minutes, so the route did not start. '
+          'Tell the person in one short sentence that they can ask again '
+          'in the open.',
+        );
+      }
+      return;
+    }
+    _pendingRouteDestination = null;
+    _pendingRouteSince = null;
+    final started = _beginRoute(destination, fix);
+    if (started == null) {
+      _stopRouteGuide();
+      _log('[Lazarus] ruta: GPS confiable, pero ningún perfil pasa cerca');
+      _sendRoute(
+        'not started: the GPS is reliable now, but no curated route passes '
+        'near here. Tell the person in one sentence and keep NO ROUTES.',
+      );
+      return;
+    }
+    _sendRoute('started now that the GPS is reliable. $started');
   }
 
   /// Guarda una nota de campo con la hora y la última posición conocida, y
@@ -2945,7 +3045,7 @@ class LiveController extends Notifier<LiveUiState> {
             (call.args['destination'] ?? '').toString(),
           );
         case 'stop_route':
-          final had = _routeGuide != null;
+          final had = _routeGuide != null || _pendingRouteDestination != null;
           _stopRouteGuide();
           if (had) _log('[Lazarus] ruta: detenida a pedido de la persona');
           results[call.id] = had
