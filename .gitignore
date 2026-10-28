@@ -139,3 +139,8 @@ vscode
 
 # Obfuscation related
 app.*.map.json
+
+# Configuración local de compilación (ver .env.example)
+.env
+.env.*
+!.env.example

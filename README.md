@@ -29,9 +29,17 @@ flutter pub get
 ./scripts/run-emulator.sh
 # Teléfono por USB (adb reverse hacia el backend local)
 ./scripts/run-phone.sh
-# O indicando la URL del backend
+# O con la configuración en un .env local (no se versiona)
+cp .env.example .env        # completar BACKEND_URL y, en el piloto, FIELD_EVIDENCE
+flutter run --dart-define-from-file=.env
+# O indicando la URL del backend directamente
 flutter run --dart-define=BACKEND_URL=http://<ip-del-backend>:8000
 ```
+
+`BACKEND_URL` y `FIELD_EVIDENCE` son valores de compilación, no secretos: la clave del
+servicio de IA vive solo en el backend. Un `--dart-define` explícito tiene prioridad
+sobre el `.env`, y una variable vacía toma el valor por defecto (`http://localhost:8000`
+y `false`).
 
 ## Sin datos móviles y SOS por gesto (HU-042)
 
@@ -148,10 +156,10 @@ Desde la Fase 0 los participantes usan el backend de Render, sin ngrok ni PC dur
 prueba. El APK que se les pasa (por WhatsApp o por USB) se compila así:
 
 ```bash
+# .env con BACKEND_URL=<URL https del backend> y FIELD_EVIDENCE=true
 flutter build apk --release \
   --build-name=0.2.0 --build-number=<N> \
-  --dart-define=BACKEND_URL=https://pi-backend-lazarus.onrender.com \
-  --dart-define=FIELD_EVIDENCE=true
+  --dart-define-from-file=.env
 
 adb install -r build/app/outputs/flutter-apk/app-release.apk
 ```
