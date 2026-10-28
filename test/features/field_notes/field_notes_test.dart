@@ -194,14 +194,61 @@ void main() {
       expect(notes.notes, hasLength(1));
     });
 
+    test('si pregunta qué anotar, la respuesta de la persona es la nota '
+        'aunque no llame a add_note', () async {
+      hear(' Anota.');
+      await assistantSaysAndEnds('¿Qué quieres que anote?');
+      expect(notes.notes, isEmpty);
+      hear(' Que hay un poste.');
+      await assistantSaysAndEnds('Semáforo en rojo.');
+      expect(notes.notes.single.text, 'Que hay un poste.');
+    });
+
+    test('sin pedir anotar no se guarda nada', () async {
+      hear(' ¿Dónde estoy?');
+      await assistantSaysAndEnds('Estás en la estación.');
+      expect(notes.notes, isEmpty);
+    });
+
+    for (final (heard, said, text) in [
+      // Jornada del 27-oct: notas que se perdieron.
+      (
+        ' A nota que para pasar el cruce peatonal son 15 pasos.',
+        'Anotado.',
+        'para pasar el cruce peatonal son 15 pasos',
+      ),
+      (' Anota que son 22 pasos.', 'Anoto que son 22 pasos.', 'son 22 pasos'),
+      (
+        ' Anota que hay dos bancos Davivienda.',
+        'Anotado: hay dos bancos Davivienda.',
+        'hay dos bancos Davivienda',
+      ),
+      (
+        ' Nota que aquí debo seguir por un pasillo largo.',
+        'Entendido.',
+        'aquí debo seguir por un pasillo largo',
+      ),
+    ]) {
+      test('la persona pidió anotar y el asistente respondió "$said" sin '
+          'llamar a add_note: la app la guarda', () async {
+        hear(heard);
+        await assistantSaysAndEnds(said);
+        expect(notes.notes.single.text, text);
+      });
+    }
+
     test(
-      'sin "Anotado." no guarda nada (p. ej. pregunta qué anotar)',
+      'si el asistente guarda después la misma nota, no se repite',
       () async {
-        hear(' Anota.');
-        await assistantSaysAndEnds('¿Qué quieres que anote?');
-        hear(' Que hay un poste.');
-        await assistantSaysAndEnds('Semáforo en rojo.');
-        expect(notes.notes, isEmpty);
+        hear(' Anota que son 22 pasos hasta la portería.');
+        await assistantSaysAndEnds('Anoto que son 22 pasos.');
+        expect(
+          await addNote({'text': 'son 22 pasos hasta la portería'}),
+          startsWith('ok: the note was already saved'),
+        );
+        expect(notes.notes, hasLength(1));
+        await addNote({'text': 'hay un escalón'});
+        expect(notes.notes, hasLength(2));
       },
     );
 
@@ -236,6 +283,19 @@ void main() {
         noteRequestText('apunta que el semáforo peatonal está dañado'),
         'el semáforo peatonal está dañado',
       );
+      expect(noteRequestText(' A nota que hay escaleras.'), 'hay escaleras');
+      expect(
+        noteRequestText('136 pasos por el pasillo, anótalo.'),
+        '136 pasos por el pasillo',
+      );
+      expect(noteRequestText('Es una nota musical.'), isNull);
+      expect(
+        sameNote('son 22 pasos', 'Son 22 pasos hasta la portería'),
+        isTrue,
+      );
+      expect(sameNote('hay un escalón', 'son 22 pasos'), isFalse);
+      expect(asksWhatToNote('¿Qué deseas anotar?'), isTrue);
+      expect(asksWhatToNote('Anotado.'), isFalse);
       expect(noteRequestText(' Anota.'), isNull);
       expect(noteRequestText('¿Dónde estoy?'), isNull);
       expect(saysNoted('Anotado. El semáforo peatonal está en verde.'), isTrue);

@@ -171,8 +171,11 @@ String? noteRequestText(String heard) {
     final i = from.indexOf(ch);
     norm.write(i >= 0 ? to[i] : ch);
   }
+  // "A nota que…" y "Nota que…": así transcribió el servicio "anota" el 27-oct,
+  // y esas notas se perdieron.
   final match = RegExp(
-    r'\b(anota|anote|apunta|apunte|toma nota|note that|write down|annota|note)\b'
+    r'(\b(anota|anote|anotes|anotar|anotalo|anotala|anotame|a nota|apunta|apunte|apuntalo|toma nota|note that|write down|annota|note)\b'
+    r'|^\s*nota\b|[.,;!?]\s*nota\b)'
     r'(\s+(que|de|that|che|of))?',
   ).firstMatch(norm.toString());
   if (match == null) return null;
@@ -215,6 +218,34 @@ bool isPlaceMarkerNote(String text) {
   ).split(RegExp(r'[^a-z]+')).where((w) => w.isNotEmpty).toList();
   return words.isNotEmpty && words.every(marker.contains);
 }
+
+/// Dos textos de nota dicen lo mismo: la mayoría de las palabras de la más
+/// corta están en la otra. Evita guardar dos veces la nota que la app guardó
+/// sola y que el asistente guarda después.
+bool sameNote(String a, String b) {
+  Set<String> words(String t) => normalizeForMatch(
+    t,
+  ).split(RegExp(r'[^a-z0-9]+')).where((w) => w.length > 2).toSet();
+  final x = words(a);
+  final y = words(b);
+  if (x.isEmpty || y.isEmpty) return false;
+  final shorter = x.length <= y.length ? x : y;
+  final longer = identical(shorter, x) ? y : x;
+  return shorter.where(longer.contains).length >= shorter.length * 0.6;
+}
+
+/// Tiempo en que un `add_note` igual a la nota que guardó la app se toma como
+/// la misma nota.
+const Duration noteRepeatWindow = Duration(seconds: 60);
+
+/// Espera antes de subir las notas nuevas al panel: varias notas seguidas van
+/// en una sola subida.
+const Duration noteUploadDelay = Duration(seconds: 45);
+
+/// El asistente preguntó qué anotar: lo que diga la persona después es la nota.
+bool asksWhatToNote(String said) => RegExp(
+  r'que (deseas|quieres|debo|necesitas) (que )?(anotar|anote|apuntar)|what (should|do you want me to) (note|write)',
+).hasMatch(normalizeForMatch(said));
 
 /// El asistente dijo que anotó ("Anotado.", "Noted.", "Noté.", "Annotato.").
 bool saysNoted(String said) => RegExp(
@@ -1074,6 +1105,17 @@ class LiveController extends Notifier<LiveUiState> {
   final StringBuffer _userTurnHeard = StringBuffer();
   bool _noteCalled = false;
 
+  /// El asistente preguntó qué anotar: la respuesta de la persona es la nota.
+  bool _noteTextExpected = false;
+
+  /// Última nota que guardó la app por su cuenta, para no repetirla si el
+  /// asistente llama después a `add_note` con lo mismo.
+  ({String text, DateTime at})? _appSavedNote;
+
+  /// Las notas suben al panel poco después de guardarse, no solo al detener:
+  /// si el teléfono se pierde o se daña en la calle, quedan en el servidor.
+  Timer? _notesUpload;
+
   /// La persona pidió pausar (`false`) o reanudar (`true`) las descripciones:
   /// si el asistente no llama a `set_descriptions`, la app lo guarda igual.
   bool? _describingRequested;
@@ -1138,6 +1180,7 @@ class LiveController extends Notifier<LiveUiState> {
     ref.onDispose(_teardown);
     ref.onDispose(_stopBackground);
     ref.onDispose(() => _afterSpeechFallback?.cancel());
+    ref.onDispose(() => _notesUpload?.cancel());
     // Español por defecto; si la persona cambió el idioma por voz, se conserva.
     return LiveUiState(language: _settings.getLanguage());
   }
@@ -2326,22 +2369,30 @@ class LiveController extends Notifier<LiveUiState> {
 
   /// Red de seguridad del silencio total: el asistente dijo que se silenciaba
   /// pero no llamó a la función, así que la app deja de enviar igual.
-  /// Red de seguridad de las notas: el asistente dijo "Anotado." sin llamar a
-  /// `add_note`, así que la app guarda lo que pidió la persona.
+  /// Red de seguridad de las notas: la persona pidió anotar y el asistente no
+  /// llamó a `add_note`, así que la app guarda lo que pidió, diga lo que diga
+  /// el asistente. El 27-oct se perdieron 15 notas: el asistente respondió
+  /// "Anoto que son 22 pasos" o "Anotado: …" y el respaldo solo reconocía
+  /// "Anotado.", o la transcripción decía "A nota que…".
   void _applyRequestedNote(String said) {
     // Turno sin respuesta hablada (p. ej. el de la función): la persona puede
     // seguir hablando y la respuesta llega en el turno siguiente.
     if (said.trim().isEmpty) return;
     final heard = _userTurnHeard.toString();
     final called = _noteCalled;
+    final expected = _noteTextExpected;
     _userTurnHeard.clear();
     _noteCalled = false;
-    if (called || !saysNoted(said)) return;
-    final text = noteRequestText(heard);
-    if (text == null) return;
+    _noteTextExpected = !called && asksWhatToNote(said);
+    if (called) return;
+    final text = noteRequestText(heard) ?? (expected ? heard.trim() : null);
+    if (text == null || text.isEmpty) return;
     _log(
-      '[Lazarus] nota guardada por la app (el asistente dijo "Anotado" sin llamar a add_note)',
+      saysNoted(said)
+          ? '[Lazarus] nota guardada por la app (el asistente dijo "Anotado" sin llamar a add_note)'
+          : '[Lazarus] nota guardada por la app (la persona pidió anotar y el asistente no llamó a add_note)',
     );
+    _appSavedNote = (text: text, at: ref.read(liveClockProvider)());
     unawaited(_addFieldNote(text));
   }
 
@@ -2509,9 +2560,18 @@ class LiveController extends Notifier<LiveUiState> {
   String _startRoute(String destination) {
     final location = ref.read(locationControllerProvider);
     final fix = location.fix;
+    final active = _routeGuide;
+    if (active != null && !active.finished) {
+      final picked = fix == null ? null : pickRoute(_routes, fix, destination);
+      if (picked == null || picked.slug == active.profile.slug) {
+        return _routeGoesOn(active);
+      }
+    }
+    // Una ruta nueva reemplaza a la anterior y a su revisión periódica (antes
+    // quedaban dos temporizadores revisando la ruta).
+    _stopRouteGuide();
     if (fix == null || location.reliability != GpsReliability.reliable) {
       if (_routes.isEmpty) return _noRoute();
-      _stopRouteGuide();
       _pendingRouteDestination = destination;
       _pendingRouteSince = ref.read(liveClockProvider)();
       _routeWatch = Timer.periodic(routeCheckInterval, (_) => checkRoute());
@@ -2525,6 +2585,23 @@ class LiveController extends Notifier<LiveUiState> {
     if (started == null) return _noRoute();
     _routeWatch = Timer.periodic(routeCheckInterval, (_) => checkRoute());
     return started;
+  }
+
+  /// `start_route` con la misma ruta activa: no se reinicia. El 27-oct el
+  /// asistente la pidió otra vez 4 veces en la ida, y cada vez repetía el aviso
+  /// de ruta de prueba y la instrucción del punto, aunque ya no correspondía.
+  String _routeGoesOn(RouteGuide guide) {
+    final total = guide.profile.points.length;
+    final next = guide.nextPoint!;
+    _log(
+      '[Lazarus] ruta: ya activa "${guide.profile.slug}", no se reinicia '
+      '(siguiente: punto ${guide.nextIndex + 1})',
+    );
+    return "already_active: the app is already guiding along '${guide.profile.name}'. "
+        "Next: point ${guide.nextIndex + 1} of $total, '${next.name}'. Do not "
+        'repeat the test-route warning or the last instruction; tell the person '
+        "in one short sentence that the guidance goes on. The app will keep "
+        "sending '[RUTA]' at each point.";
   }
 
   String _noRoute() {
@@ -2694,6 +2771,10 @@ class LiveController extends Notifier<LiveUiState> {
           'the person, in one sentence, that you could not write it down.';
     }
     _notesThisSession++;
+    _notesUpload?.cancel();
+    _notesUpload = Timer(noteUploadDelay, () {
+      if (ref.mounted) unawaited(_uploadLogs('notas nuevas'));
+    });
     String two(int n) => n.toString().padLeft(2, '0');
     final time = '${two(at.hour)}:${two(at.minute)}';
     final where = fix == null
@@ -3031,12 +3112,21 @@ class LiveController extends Notifier<LiveUiState> {
           );
         case 'add_note':
           _noteCalled = true;
-          // "Anota que la rampa está bloqueada" (HU-024).
-          waits.add(
-            _addFieldNote(
-              (call.args['text'] ?? '').toString(),
-            ).then((r) => results[call.id] = r),
-          );
+          _noteTextExpected = false;
+          final text = (call.args['text'] ?? '').toString();
+          final saved = _appSavedNote;
+          if (saved != null &&
+              ref.read(liveClockProvider)().difference(saved.at) <=
+                  noteRepeatWindow &&
+              sameNote(saved.text, text)) {
+            _log('[Lazarus] nota ya guardada por la app: no se repite');
+            results[call.id] =
+                'ok: the note was already saved. Reply ONLY with one word '
+                'confirming it was written down.';
+          } else {
+            // "Anota que la rampa está bloqueada" (HU-024).
+            waits.add(_addFieldNote(text).then((r) => results[call.id] = r));
+          }
         case 'get_unicentro_route':
           results[call.id] = _describeRouteAForAssistant();
         case 'set_route_disturbance':
