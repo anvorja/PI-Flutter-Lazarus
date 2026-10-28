@@ -36,6 +36,15 @@ enum SosStatus {
   sending,
 }
 
+/// Cómo dar el permiso de SMS. Android 13 en adelante bloquea el SMS de una app
+/// instalada desde un .apk ("Se ha denegado el acceso a SMS a la aplicación",
+/// jornada del 27-oct): hay que permitir antes los ajustes restringidos.
+const String smsPermissionSteps =
+    'The SMS permission was not granted, so the alert cannot be sent by SMS. '
+    'Tell them, in short steps, that someone can enable it: phone Settings, '
+    'Apps, Lazarus; if SMS appears blocked, the three-dot menu at the top, '
+    '"Allow restricted settings" and confirm; then Permissions, SMS, Allow.';
+
 class SosController extends Notifier<SosStatus> {
   late final EmergencyRepository _repo;
   Timer? _countdown;
@@ -89,9 +98,8 @@ class SosController extends Notifier<SosStatus> {
         '${spokenPhone(phone)}. Repeat the name and the number in groups of '
         'digits so the person can confirm it.';
     if (canSms) return saved;
-    return '$saved The SMS permission was not granted: also tell them that '
-        'the alert cannot be sent until they allow SMS for Lazarus in the '
-        'phone settings.';
+    _log('[Lazarus] SOS: sin permiso de SMS');
+    return '$saved $smsPermissionSteps';
   }
 
   /// `trigger_sos`: la primera vez pide confirmación; si ya se preguntó, la
@@ -328,6 +336,13 @@ class SosController extends Notifier<SosStatus> {
         SmsResult.noPermission => 'the SMS permission was not granted',
         _ => 'no signal or the operator rejected it',
       };
+      if (sent == SmsResult.noPermission) {
+        return 'failed: the SMS could not be sent ($reason). Tell the person the '
+            'alert was NOT sent and offer to call $name (call_phone with '
+            'to="contact") or the emergency line 123 (call_phone with '
+            'to="emergency"). Only after that, and only if they ask how to fix '
+            'it: $smsPermissionSteps';
+      }
       return 'failed: the SMS could not be sent ($reason). Tell the person the '
           'alert was NOT sent and offer to call $name (call_phone with '
           'to="contact") or the emergency line 123 (call_phone with '

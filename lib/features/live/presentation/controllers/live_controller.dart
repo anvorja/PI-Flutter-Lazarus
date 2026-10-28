@@ -941,7 +941,7 @@ class LiveUiState {
       return 'Modo reunión: escuchando en silencio. Llámame por mi nombre.';
     }
     return switch (status) {
-      LiveStatus.idle => 'Toca para empezar',
+      LiveStatus.idle => 'Iniciar asistente',
       LiveStatus.connecting => 'Conectando…',
       LiveStatus.connected => 'Escuchando',
       LiveStatus.error => 'Error de conexión. Toca para reintentar.',
@@ -1488,9 +1488,10 @@ class LiveController extends Notifier<LiveUiState> {
   /// Android no deja usar la cámara sin la app visible. Avisarle al asistente
   /// no basta: en la caminata de CP-LAZA-45 siguió describiendo la última imagen
   /// como si fuera lo que la persona tenía delante, y hasta dio indicaciones con
-  /// ella. Por eso, al bloquear se abre una sesión nueva sin ninguna imagen, en
-  /// modo pantalla bloqueada; al desbloquear, tras una espera por si fue sin
-  /// querer, se vuelve a una sesión con cámara (HU-017).
+  /// ella. Por eso, al bloquear la cámara se pausa enseguida y, si la app sigue
+  /// oculta unos segundos, se abre una sesión nueva sin ninguna imagen, en modo
+  /// pantalla bloqueada; al desbloquear, tras una espera por si fue sin querer,
+  /// se vuelve a una sesión con cámara (HU-017).
   void onVisibilityChanged(bool visible) {
     if (visible == _visible) return;
     _visible = visible;
@@ -1530,7 +1531,7 @@ class LiveController extends Notifier<LiveUiState> {
     // hace al salir de esos modos.
     if (state.micMuted || state.meetingMode) return;
     _cameraSwitch = Timer(
-      blind ? Duration.zero : ref.read(cameraUnlockDelayProvider),
+      ref.read(blind ? cameraLockDelayProvider : cameraUnlockDelayProvider),
       _switchCameraSession,
     );
   }
