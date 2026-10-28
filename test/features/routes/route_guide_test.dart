@@ -182,6 +182,18 @@ void main() {
       expect(b.point.name, 'B');
     });
 
+    test('al llegar, si el siguiente es un cruce, lo dice', () {
+      final guide = RouteGuide(profile, startAt: 1);
+      final event = guide.update(_at(_step), ok)!;
+      expect(
+        describeRouteEvent(event, _at(_step), (_) => null),
+        endsWith(
+          "Next: 'Cebra', about 135 steps. crossing: zebra crossing. "
+          'risk: high.',
+        ),
+      );
+    });
+
     test('se retoma en el punto más cercano', () {
       expect(nearestPointIndex(profile, _at(_step * 2.1)), 2);
       final guide = RouteGuide(profile, startAt: 2);
@@ -201,6 +213,75 @@ void main() {
       final guide = RouteGuide(close)..update(_at(0), ok);
       expect(guide.update(_at(0.0001), ok), isNull);
       expect(guide.update(_at(0.0003), ok)!.kind, RouteEventKind.arrived);
+    });
+  });
+
+  group('fuera de la ruta y reenganche (27-oct, Unicentro)', () {
+    // Seis puntos cada ~100 m hacia el norte.
+    final long = RouteProfile.fromJson({
+      ..._profileJson(),
+      'points': [
+        for (var i = 0; i < 6; i++)
+          {'name': 'P${i + 1}', 'lat': i * _step, 'lon': 0, 'arrive_m': 8},
+      ],
+    });
+
+    test('a mitad de un tramo largo no está fuera de la ruta', () {
+      final guide = RouteGuide(long)..update(_at(0), ok);
+      for (final f in [0.3, 0.4, 0.5, 0.6]) {
+        final e = guide.update(_at(_step * f), ok);
+        expect(e?.kind, isNot(RouteEventKind.offRoute));
+      }
+    });
+
+    test('lejos de los tramos que faltan lo dice una sola vez, con el punto '
+        'más cercano', () {
+      final guide = RouteGuide(long)..update(_at(0), ok);
+      final aside = _at(_step * 2, lon: 0.0006); // ~65 m al este del P3
+      expect(guide.update(aside, ok), isNull);
+      expect(guide.update(aside, ok), isNull);
+      final off = guide.update(aside, ok)!;
+      expect(off.kind, RouteEventKind.offRoute);
+      expect(off.point.name, 'P3');
+      final message = describeRouteEvent(off, aside, (_) => 3);
+      expect(message, startsWith('off route:'));
+      expect(message, contains("point 3 of 6, 'P3'"));
+      expect(message, contains("at 3 o'clock"));
+      for (var i = 0; i < 5; i++) {
+        expect(guide.update(aside, ok), isNull); // no se repite
+      }
+    });
+
+    test(
+      'al llegar a un punto más adelante por otro camino, sigue desde ahí',
+      () {
+        final guide = RouteGuide(long)..update(_at(0), ok);
+        final p5 = _at(_step * 4);
+        expect(guide.update(p5, ok), isNull); // una sola posición no basta
+        final back = guide.update(p5, ok)!;
+        expect(back.kind, RouteEventKind.rejoined);
+        expect(back.index, 4);
+        expect(guide.nextPoint!.name, 'P6');
+        expect(
+          describeRouteEvent(back, p5, (_) => null),
+          startsWith("back on the route at point 5 of 6: 'P5'."),
+        );
+      },
+    );
+
+    test('un salto aislado del GPS no reengancha', () {
+      final guide = RouteGuide(long)..update(_at(0), ok);
+      expect(guide.update(_at(_step * 4), ok), isNull);
+      guide.update(_at(_step * 0.3), ok);
+      expect(guide.update(_at(_step * 4), ok), isNull);
+      expect(guide.nextPoint!.name, 'P2');
+    });
+
+    test('el reenganche al último punto termina la ruta', () {
+      final guide = RouteGuide(long)..update(_at(0), ok);
+      guide.update(_at(_step * 5), ok);
+      expect(guide.update(_at(_step * 5), ok)!.kind, RouteEventKind.finished);
+      expect(guide.finished, isTrue);
     });
   });
 
@@ -249,6 +330,30 @@ void main() {
         expect(pickRoute([ida, back], mid, 'la estación')!.slug, 'vuelta');
       },
     );
+
+    test('un destino intermedio elige el perfil que lo tiene por delante, no '
+        'el que ya terminó (27-oct: "llévame a Unicentro")', () {
+      final ida = RouteProfile.fromJson({
+        ..._profileJson(slug: 'ida', destination: 'Univalle'),
+        'points': [
+          {'name': 'Torniquetes', 'lat': 0.0001, 'lon': 0},
+          {'name': 'Entrada de Unicentro', 'lat': _step, 'lon': 0},
+          {'name': 'Univalle', 'lat': 2 * _step, 'lon': 0},
+        ],
+      });
+      final vuelta = RouteProfile.fromJson({
+        ..._profileJson(slug: 'vuelta', destination: 'Estación de prueba'),
+        'points': [
+          {'name': 'Univalle', 'lat': 2 * _step, 'lon': 0},
+          {'name': 'Salida de Unicentro', 'lat': _step, 'lon': 0},
+          {'name': 'Torniquetes', 'lat': 0, 'lon': 0},
+        ],
+      });
+      // En la estación: el último punto de la vuelta es el más cercano.
+      expect(pickRoute([vuelta, ida], _at(0), 'Unicentro')!.slug, 'ida');
+      expect(pickRoute([vuelta, ida], _at(0), 'el cine')!.slug, 'ida');
+      expect(pickRoute([vuelta], _at(0), 'el cine')!.slug, 'vuelta');
+    });
 
     test('un perfil mal formado se descarta', () {
       final body = jsonEncode([
@@ -381,6 +486,35 @@ void main() {
         expect(
           session.routeGuides.last,
           startsWith("reached point 2 of 4: 'Árbol grande'"),
+        );
+      },
+    );
+
+    test(
+      'start_route con la misma ruta activa no la reinicia (27-oct)',
+      () async {
+        await connect();
+        await reliableAt(0);
+        await callTool('start_route', {'destination': 'la entrada'});
+        live().checkRoute();
+        await settle();
+        gps.fixes.add(_at(_step, at: t0.add(const Duration(seconds: 9))));
+        await settle();
+        live().checkRoute();
+        await settle();
+        final guides = session.routeGuides.length;
+        final again = await callTool('start_route', {'destination': 'Entrada'});
+        expect(again, startsWith('already_active:'));
+        expect(again, contains("Next: point 3 of 4, 'Cebra'"));
+        expect(again, isNot(contains('not validated')));
+        live().checkRoute();
+        await settle();
+        expect(session.routeGuides, hasLength(guides)); // no repite el punto 2
+        expect(
+          logs,
+          contains(
+            '[Lazarus] ruta: ya activa "estacion-prueba-ida", no se reinicia (siguiente: punto 3)',
+          ),
         );
       },
     );

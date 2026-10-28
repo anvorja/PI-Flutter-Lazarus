@@ -3,6 +3,8 @@
 /// confiable no hay eventos (HU-018, regla 4).
 library;
 
+import 'dart:math' as math;
+
 import 'package:flutter/foundation.dart';
 
 import '../../location/domain/entities/location_fix.dart';
@@ -15,8 +17,18 @@ const Duration routeCheckInterval = Duration(seconds: 2);
 const Duration routeGpsWait = Duration(minutes: 5);
 
 /// `passed`: la persona ya va hacia el punto que sigue sin haber entrado al
-/// radio de este; la guía avanza sin anunciarlo.
-enum RouteEventKind { approaching, arrived, passed, finished }
+/// radio de este; la guía avanza sin anunciarlo. `rejoined`: llegó a un punto
+/// más adelante que los que se buscan, por otro camino, y la guía sigue desde
+/// ahí. `offRoute`: se alejó de todos los puntos que faltan; el índice es el
+/// más cercano de ellos.
+enum RouteEventKind {
+  approaching,
+  arrived,
+  passed,
+  finished,
+  rejoined,
+  offRoute,
+}
 
 @immutable
 class RouteEvent {
@@ -51,11 +63,26 @@ class RouteGuide {
   /// la guía esperando un punto que la persona pasó a 24 m.
   static const double maxArriveM = 10;
 
+  /// A partir de esta distancia de todos los puntos que faltan, la persona va
+  /// fuera de la ruta. El 27-oct, dentro de Unicentro, tomó otro pasillo y la
+  /// guía esperó un punto 19 minutos sin decir nada.
+  static const double offRouteM = 30;
+
+  /// Posiciones seguidas que confirman un reenganche o una salida de la ruta:
+  /// una sola puede ser un salto del GPS.
+  static const int rejoinFixes = 2;
+  static const int offRouteFixes = 3;
+
   int _next;
   int? _approached;
 
   /// Último punto alcanzado o dado por pasado; `null` al empezar o al retomar.
   int? _last;
+
+  int? _rejoinAt;
+  int _rejoinSeen = 0;
+  int _offSeen = 0;
+  bool _offSaid = false;
 
   /// Índice del siguiente punto por alcanzar.
   int get nextIndex => _next;
@@ -108,6 +135,8 @@ class RouteGuide {
       p.latitude,
       p.longitude,
     );
+    final aside = _offRoute(fix, last, d > arriveRadius(p, fix));
+    if (aside != null) return aside;
     if (_next + 1 < points.length) {
       // Pasó de largo: está más cerca del punto que sigue que el propio punto
       // pendiente (con [maxArriveM] de margen, para no adelantarse a una
@@ -141,6 +170,86 @@ class RouteGuide {
     return null;
   }
 
+  /// Reenganche y salida de la ruta. [from]: el primer punto que no buscó la
+  /// llegada normal; [awayFromNext]: la persona no está en el radio del
+  /// pendiente.
+  RouteEvent? _offRoute(LocationFix fix, int from, bool awayFromNext) {
+    final points = profile.points;
+    // Reenganche: está en el radio de un punto más adelante, dos veces seguidas.
+    int? at;
+    if (awayFromNext) {
+      for (var i = from; i < points.length; i++) {
+        final p = points[i];
+        final d = distanceMeters(
+          fix.latitude,
+          fix.longitude,
+          p.latitude,
+          p.longitude,
+        );
+        if (d <= arriveRadius(p, fix)) {
+          at = i;
+          break;
+        }
+      }
+    }
+    if (at == null) {
+      _rejoinAt = null;
+      _rejoinSeen = 0;
+    } else {
+      _rejoinSeen = at == _rejoinAt ? _rejoinSeen + 1 : 1;
+      _rejoinAt = at;
+      if (_rejoinSeen >= rejoinFixes) {
+        _rejoinAt = null;
+        _rejoinSeen = 0;
+        _offSeen = 0;
+        _offSaid = false;
+        _last = at;
+        _next = at + 1;
+        _approached = null;
+        return RouteEvent(
+          at == points.length - 1
+              ? RouteEventKind.finished
+              : RouteEventKind.rejoined,
+          at,
+          profile,
+        );
+      }
+    }
+    // Fuera de la ruta: lejos de todos los tramos que faltan (desde el que
+    // lleva al pendiente), tres veces seguidas. Se mide al tramo y no a los
+    // puntos: a mitad de un tramo de 100 m se está a 50 m de ambos extremos.
+    var nearest = _next;
+    var nearestD = double.infinity;
+    for (var i = _next; i < points.length; i++) {
+      final p = points[i];
+      final d = distanceMeters(
+        fix.latitude,
+        fix.longitude,
+        p.latitude,
+        p.longitude,
+      );
+      if (d < nearestD) {
+        nearest = i;
+        nearestD = d;
+      }
+    }
+    var routeD = nearestD;
+    for (var i = _next > 0 ? _next - 1 : 0; i + 1 < points.length; i++) {
+      final d = segmentDistanceMeters(fix, points[i], points[i + 1]);
+      if (d < routeD) routeD = d;
+    }
+    if (routeD <= offRouteM) {
+      _offSeen = 0;
+      // De vuelta cerca: si se vuelve a salir, se avisa otra vez.
+      if (routeD <= offRouteM / 2) _offSaid = false;
+      return null;
+    }
+    _offSeen++;
+    if (_offSeen < offRouteFixes || _offSaid) return null;
+    _offSaid = true;
+    return RouteEvent(RouteEventKind.offRoute, nearest, profile);
+  }
+
   /// Si la persona ya se alejó del último punto lo que mide el tramo hasta el
   /// pendiente (con [maxArriveM] de margen). Sin esto no se salta un punto: en
   /// un tramo en U el punto de después queda cerca del anterior, y el 27-oct
@@ -172,6 +281,26 @@ class RouteGuide {
     final gps = fix.accuracyM.clamp(0, maxArriveM).toDouble();
     return p.arriveM > gps ? p.arriveM : gps;
   }
+}
+
+/// Distancia de [fix] al tramo recto entre [a] y [b], en metros (plano local:
+/// los tramos miden decenas de metros).
+double segmentDistanceMeters(LocationFix fix, RoutePoint a, RoutePoint b) {
+  const metersPerDegree = 111320.0;
+  final cosLat = math.cos(a.latitude * math.pi / 180);
+  double x(double lon) => (lon - a.longitude) * metersPerDegree * cosLat;
+  double y(double lat) => (lat - a.latitude) * metersPerDegree;
+  final bx = x(b.longitude);
+  final by = y(b.latitude);
+  final px = x(fix.longitude);
+  final py = y(fix.latitude);
+  final length2 = bx * bx + by * by;
+  final t = length2 == 0
+      ? 0.0
+      : ((px * bx + py * by) / length2).clamp(0.0, 1.0).toDouble();
+  final dx = px - t * bx;
+  final dy = py - t * by;
+  return math.sqrt(dx * dx + dy * dy);
 }
 
 /// Índice del punto del perfil más cercano a [fix].
@@ -234,14 +363,28 @@ String describeRouteEvent(
     case RouteEventKind.finished:
       return "finished: reached '${p.name}', the end of the route "
           "'${event.profile.name}'.";
-    case RouteEventKind.arrived:
+    case RouteEventKind.arrived || RouteEventKind.rejoined:
       final instruction = p.instruction.isEmpty
           ? ''
           : " Instruction: '${p.instruction}'.";
       final next = event.next!;
-      return "reached point $number of $total: '${p.name}'.$instruction"
+      final reached = event.kind == RouteEventKind.rejoined
+          ? 'back on the route at point'
+          : 'reached point';
+      // Un cruce cerca del punto no tiene aviso de aproximación propio (el
+      // 27-oct, la Calle Quinta queda a 5 pasos del paradero): va aquí.
+      final nextDetails = next.crossing != null || next.risk == RouteRisk.high
+          ? details(next)
+          : '';
+      return "$reached $number of $total: '${p.name}'.$instruction"
           '${details(p)}'
-          " Next: '${next.name}', ${where(next)}.";
+          " Next: '${next.name}', ${where(next)}.$nextDetails";
+    case RouteEventKind.offRoute:
+      return 'off route: the person is away from the route. Nearest point '
+          "ahead: point $number of $total, '${p.name}', ${where(p)}. Tell "
+          'them once, in one short sentence, with that distance and hour; do '
+          'not invent turns or streets. The route stays active: the app will '
+          "send '[RUTA]' when they are back on it.";
   }
 }
 
@@ -253,7 +396,11 @@ String _crossingName(RouteCrossing crossing) => switch (crossing) {
 
 /// El perfil que pasa cerca de la posición (a [maxStartM] o menos de alguno
 /// de sus puntos, para poder retomarlo a mitad de camino), prefiriendo el que
-/// va al destino que dijo la persona.
+/// va al destino que dijo la persona. Si el destino no es el de ningún perfil,
+/// sirve uno que lo nombre en un punto que falta ("Unicentro" en la ida a
+/// Univalle). Sin coincidencias no se elige un perfil que la persona ya
+/// terminó: el 27-oct, "llévame a Unicentro" en la estación tomó la vuelta,
+/// cuyo último punto era el más cercano, y la ruta terminó al instante.
 RouteProfile? pickRoute(
   List<RouteProfile> profiles,
   LocationFix fix,
@@ -277,8 +424,16 @@ RouteProfile? pickRoute(
       final target = _words(r.destination);
       if (words.any(target.contains)) return r;
     }
+    for (final r in near) {
+      final ahead = r.points.skip(nearestPointIndex(r, fix) + 1);
+      if (ahead.any((p) => words.any(_words(p.name).contains))) return r;
+    }
   }
-  return near.first;
+  final unfinished = [
+    for (final r in near)
+      if (nearestPointIndex(r, fix) < r.points.length - 1) r,
+  ];
+  return unfinished.isEmpty ? near.first : unfinished.first;
 }
 
 Set<String> _words(String text) {
