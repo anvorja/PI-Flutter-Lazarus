@@ -67,4 +67,23 @@ class BackgroundSessionRepositoryImpl implements BackgroundSessionRepository {
       return true;
     }
   }
+
+  @override
+  Future<ProcessExit?> lastExit() async {
+    try {
+      final r = await _channel.invokeMapMethod<String, Object?>('lastExit');
+      final ms = r?['timestampMs'];
+      if (r == null || ms is! int) return null;
+      return (
+        kind: (r['kind'] as String?) ?? 'other',
+        reason: (r['reason'] as int?) ?? 0,
+        description: (r['description'] as String?) ?? '',
+        at: DateTime.fromMillisecondsSinceEpoch(ms),
+      );
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    }
+  }
 }

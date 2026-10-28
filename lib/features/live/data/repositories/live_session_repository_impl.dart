@@ -13,6 +13,7 @@ import '../../domain/entities/live_message.dart';
 import '../../domain/entities/live_close.dart';
 import '../../domain/repositories/live_session_repository.dart';
 import '../datasources/gemini_live_datasource.dart';
+import '../datasources/network_info_datasource.dart';
 
 class LiveSessionRepositoryImpl implements LiveSessionRepository {
   GeminiLiveClient? _client;
@@ -83,6 +84,7 @@ class LiveSessionRepositoryImpl implements LiveSessionRepository {
         screenLocked: screenLocked,
         screenReader: screenReader,
         deviceToken: deviceToken,
+        networkInfo: readNetworkInfo,
         onResponse: onResponse,
         onClose: (code) {
           // Solo olvida el cliente si sigue siendo el actual (no uno más nuevo).
@@ -129,6 +131,9 @@ class LiveSessionRepositoryImpl implements LiveSessionRepository {
 
   @override
   void sendRouteNotice(String notice) => _client?.sendRouteNotice(notice);
+
+  @override
+  void sendRouteGuide(String message) => _client?.sendRouteGuide(message);
 
   @override
   void sendCameraPaused() => _client?.sendCameraPaused();

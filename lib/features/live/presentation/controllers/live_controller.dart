@@ -26,7 +26,10 @@ import '../../../emergency/presentation/controllers/sos_controller.dart';
 import '../../../emergency/presentation/providers/emergency_providers.dart';
 import '../../../field_notes/domain/entities/field_note.dart';
 import '../../../field_notes/presentation/providers/field_notes_providers.dart';
+import '../../../location/domain/entities/location_fix.dart';
 import '../../../location/presentation/providers/location_providers.dart';
+import '../../../routes/domain/route_guide.dart';
+import '../../../routes/domain/route_profile.dart';
 import '../../../routes/domain/unicentro_schedule.dart';
 import '../../../routes/presentation/providers/routes_providers.dart';
 import '../providers/live_providers.dart';
@@ -72,8 +75,8 @@ const Duration screenReaderSpeechTail = Duration(milliseconds: 300);
 
 /// Minúsculas y sin tildes, para comparar nombres en la transcripción.
 String normalizeForMatch(String text) {
-  const from = 'áàäâéèëêíìïîóòöôúùüûñ';
-  const to = 'aaaaeeeeiiiioooouuuun';
+  const from = 'áàäâãéèëêíìïîóòöôõúùüûñç';
+  const to = 'aaaaaeeeeiiiiooooouuuunc';
   final lower = text.toLowerCase().trim();
   final out = StringBuffer();
   for (final ch in lower.split('')) {
@@ -144,11 +147,16 @@ bool isSpokenWords(String text) =>
 
 /// Fin de la voz para la latencia: el último momento con voz en el micrófono,
 /// salvo que quede más de 1,5 s después de la última palabra transcrita (el
-/// ruido de la calle lo mantiene alto hasta que responde el asistente).
+/// ruido de la calle lo mantiene alto hasta que responde el asistente) o más
+/// de 3 s antes: entonces es de una frase anterior y esta se dijo en voz baja
+/// (prueba del 21-oct: "Bruno" midió 18 s en lugar de 4 s).
 DateTime endOfSpeech(DateTime? lastLoud, DateTime lastWord) {
   if (lastLoud == null) return lastWord;
   final limit = lastWord.add(const Duration(milliseconds: 1500));
-  return lastLoud.isAfter(limit) ? lastWord : lastLoud;
+  final stale = lastWord.subtract(const Duration(seconds: 3));
+  return lastLoud.isAfter(limit) || lastLoud.isBefore(stale)
+      ? lastWord
+      : lastLoud;
 }
 
 /// Pedido de nota de campo (HU-024) en lo que dijo la persona: el texto a
@@ -163,8 +171,11 @@ String? noteRequestText(String heard) {
     final i = from.indexOf(ch);
     norm.write(i >= 0 ? to[i] : ch);
   }
+  // "A nota que…" y "Nota que…": así transcribió el servicio "anota" el 27-oct,
+  // y esas notas se perdieron.
   final match = RegExp(
-    r'\b(anota|anote|apunta|apunte|toma nota|note that|write down|annota|note)\b'
+    r'(\b(anota|anote|anotes|anotar|anotalo|anotala|anotame|a nota|apunta|apunte|apuntalo|toma nota|note that|write down|annota|note)\b'
+    r'|^\s*nota\b|[.,;!?]\s*nota\b)'
     r'(\s+(que|de|that|che|of))?',
   ).firstMatch(norm.toString());
   if (match == null) return null;
@@ -175,6 +186,66 @@ String? noteRequestText(String heard) {
   final before = clean(heard.substring(0, match.start));
   return before.isEmpty ? null : before;
 }
+
+/// La nota solo marca el lugar ("posición", "coordenadas", "guarda posición"):
+/// en la jornada del 24-oct un participante dejó 15 así, sin decir qué había.
+bool isPlaceMarkerNote(String text) {
+  const marker = {
+    'posicion',
+    'coordenadas',
+    'coordenada',
+    'ubicacion',
+    'guarda',
+    'guarde',
+    'guardar',
+    'guardada',
+    'actual',
+    'mi',
+    'la',
+    'esta',
+    'este',
+    'punto',
+    'aqui',
+    'note',
+    'position',
+    'location',
+    'coordinates',
+    'save',
+    'here',
+  };
+  final words = normalizeForMatch(
+    text,
+  ).split(RegExp(r'[^a-z]+')).where((w) => w.isNotEmpty).toList();
+  return words.isNotEmpty && words.every(marker.contains);
+}
+
+/// Dos textos de nota dicen lo mismo: la mayoría de las palabras de la más
+/// corta están en la otra. Evita guardar dos veces la nota que la app guardó
+/// sola y que el asistente guarda después.
+bool sameNote(String a, String b) {
+  Set<String> words(String t) => normalizeForMatch(
+    t,
+  ).split(RegExp(r'[^a-z0-9]+')).where((w) => w.length > 2).toSet();
+  final x = words(a);
+  final y = words(b);
+  if (x.isEmpty || y.isEmpty) return false;
+  final shorter = x.length <= y.length ? x : y;
+  final longer = identical(shorter, x) ? y : x;
+  return shorter.where(longer.contains).length >= shorter.length * 0.6;
+}
+
+/// Tiempo en que un `add_note` igual a la nota que guardó la app se toma como
+/// la misma nota.
+const Duration noteRepeatWindow = Duration(seconds: 60);
+
+/// Espera antes de subir las notas nuevas al panel: varias notas seguidas van
+/// en una sola subida.
+const Duration noteUploadDelay = Duration(seconds: 45);
+
+/// El asistente preguntó qué anotar: lo que diga la persona después es la nota.
+bool asksWhatToNote(String said) => RegExp(
+  r'que (deseas|quieres|debo|necesitas) (que )?(anotar|anote|apuntar)|what (should|do you want me to) (note|write)',
+).hasMatch(normalizeForMatch(said));
 
 /// El asistente dijo que anotó ("Anotado.", "Noted.", "Noté.", "Annotato.").
 bool saysNoted(String said) => RegExp(
@@ -220,6 +291,9 @@ const Set<String> leaveMeetingPhrases = {
   'termino la reunion',
   'se acabo la reunion',
   'sal del modo reunion',
+  'vuelve a hablar', // es; prueba del 21-oct: "vuelve a hablar, el modo…"
+  'modo reunion se acabo',
+  'se acabo el modo reunion',
   'you can talk',
   'you can speak',
   'meeting is over',
@@ -234,6 +308,83 @@ bool asksLeaveMeeting(String text) {
     text,
   ).replaceAll(RegExp(r'[^a-z]+'), ' ').trim();
   return leaveMeetingPhrases.any(words.contains);
+}
+
+/// Entrar en modo reunión (normalizado). En la prueba del 21-oct, "Silencio,
+/// voy a estar en una reunión" no activó el modo hasta 30 s después, con la
+/// reunión ya empezada.
+const Set<String> enterMeetingPhrases = {
+  'modo reunion', // es
+  'modo de reunion', // prueba del 21-oct: "voy a estar en modo de reunión"
+  'modo reuniao', // pt
+  'estoy en una reunion',
+  'voy a estar en una reunion',
+  'voy a entrar a una reunion',
+  'entro a una reunion',
+  'meeting mode',
+  'i am in a meeting',
+  'mode reunion',
+  'modalita riunione',
+};
+
+/// Si la persona pidió entrar en modo reunión en [text] (y no salir de él:
+/// "el modo reunión se acabó" también nombra el modo).
+bool asksMeetingMode(String text) {
+  if (asksLeaveMeeting(text)) return false;
+  final words = normalizeForMatch(
+    text,
+  ).replaceAll(RegExp(r'[^a-z]+'), ' ').trim();
+  if (RegExp(
+    r'\b(sal|salir|acabo|termino|desactiva|quita)\b',
+  ).hasMatch(words)) {
+    return false;
+  }
+  return enterMeetingPhrases.any(words.contains);
+}
+
+/// Palabras que pueden acompañar a "SOS" sin cambiar el pedido.
+const Set<String> _sosCompanions = {
+  'ayuda',
+  'auxilio',
+  'socorro',
+  'urgente',
+  'emergencia',
+  'alerta',
+  'una',
+  'la',
+  'el',
+  'por',
+  'favor',
+  'envia',
+  'enviar',
+  'manda',
+  'mandar',
+  'help',
+  'please',
+  'send',
+  'ajuda',
+  'aiuto',
+  'aide',
+  'secours',
+};
+
+/// Si [turn] es un pedido de SOS: "SOS", "S O S" o "ese o ese", solo o con
+/// palabras como "ayuda" o el nombre del asistente. Una pregunta sobre el SOS
+/// ("¿qué hace el SOS?") no cuenta. En la prueba del 21-oct, el asistente oyó
+/// "S o s" y cerró el turno sin llamar a `trigger_sos`.
+bool asksSos(String turn, {String name = ''}) {
+  if (turn.contains('?') || turn.contains('¿')) return false;
+  final words = normalizeForMatch(
+    turn,
+  ).replaceAll(RegExp(r'[^a-z]+'), ' ').trim();
+  final sos = RegExp(r'\b(s ?o ?s|ese o ese)\b');
+  if (!sos.hasMatch(words)) return false;
+  final assistant = normalizeForMatch(name).replaceAll(RegExp(r'[^a-z]+'), '');
+  return words
+      .replaceAll(sos, ' ')
+      .split(' ')
+      .where((w) => w.isNotEmpty && w != assistant)
+      .every(_sosCompanions.contains);
 }
 
 /// Respuesta de `get_time` (LAZA-115): la hora y la fecha del reloj del
@@ -271,6 +422,10 @@ enum LiveNotice {
   permissionBlocked,
   stopped,
 
+  /// Primer toque de Detener (jornada del 24-oct): con TalkBack, un doble toque
+  /// en cualquier parte activa el botón enfocado y la app se detenía sin querer.
+  stopConfirm,
+
   /// Alerta SOS enviada sola con la sesión ya cerrada (no hay asistente que lo
   /// diga).
   sosSent,
@@ -289,6 +444,9 @@ enum LiveNotice {
 
   /// SOS con el gesto, sin el asistente (HU-042). `{name}`: el contacto.
   sosGestureConfirm,
+
+  /// SOS por voz cuya pregunta del asistente no sonó (se cortó antes).
+  sosVoiceConfirm,
   sosCancelled,
   sosUnconfirmed,
   sosNoContact,
@@ -343,6 +501,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
     LiveNotice.permissionBlocked:
         'El permiso de micrófono está desactivado. Toca la pantalla para abrir los ajustes y activarlo.',
     LiveNotice.stopped: 'Asistente detenido.',
+    LiveNotice.stopConfirm:
+        '¿Detener el asistente? Toca el botón otra vez para confirmar.',
     LiveNotice.sosSent:
         'Alerta enviada a tu contacto de emergencia. Detente en un lugar seguro y espera.',
     LiveNotice.sosFailed:
@@ -357,6 +517,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Sigo sin datos móviles. Para pedir ayuda, mantén presionada la pantalla tres segundos.',
     LiveNotice.sosGestureConfirm:
         'Alerta de emergencia para {name}. Para enviarla ya, vuelve a mantener presionada la pantalla. Para cancelar, toca una vez. Si no haces nada, se envía en unos segundos.',
+    LiveNotice.sosVoiceConfirm:
+        '¿Envío la alerta a {name}? Di sí o no. Para cancelar, también puedes tocar la pantalla. Si no respondes, se envía en unos segundos.',
     LiveNotice.sosCancelled: 'Alerta cancelada.',
     LiveNotice.sosUnconfirmed:
         'Envié la alerta, pero la red no confirmó que llegó. Si puedes, llama a tu contacto o al 123.',
@@ -395,6 +557,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
     LiveNotice.permissionBlocked:
         'Microphone permission is turned off. Tap the screen to open settings and turn it on.',
     LiveNotice.stopped: 'Assistant stopped.',
+    LiveNotice.stopConfirm:
+        'Stop the assistant? Tap the button again to confirm.',
     LiveNotice.sosSent:
         'Alert sent to your emergency contact. Stop in a safe place and wait.',
     LiveNotice.sosFailed:
@@ -409,6 +573,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Still no mobile data. To ask for help, press and hold the screen for three seconds.',
     LiveNotice.sosGestureConfirm:
         'Emergency alert for {name}. To send it now, press and hold the screen again. To cancel, tap once. If you do nothing, it is sent in a few seconds.',
+    LiveNotice.sosVoiceConfirm:
+        'Shall I send the alert to {name}? Say yes or no. To cancel, you can also tap the screen. If you do not answer, it is sent in a few seconds.',
     LiveNotice.sosCancelled: 'Alert cancelled.',
     LiveNotice.sosUnconfirmed:
         'I sent the alert, but the network did not confirm it arrived. If you can, call your contact or 123.',
@@ -447,6 +613,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
     LiveNotice.permissionBlocked:
         'L\'accès au micro est désactivé. Touchez l\'écran pour ouvrir les réglages et l\'activer.',
     LiveNotice.stopped: 'Assistant arrêté.',
+    LiveNotice.stopConfirm:
+        "Arrêter l'assistant ? Touche le bouton encore une fois pour confirmer.",
     LiveNotice.sosSent:
         'Alerte envoyée à ton contact d\'urgence. Arrête-toi dans un endroit sûr et attends.',
     LiveNotice.sosFailed:
@@ -461,6 +629,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Toujours pas de données mobiles. Pour demander de l\'aide, maintiens l\'écran appuyé trois secondes.',
     LiveNotice.sosGestureConfirm:
         'Alerte d\'urgence pour {name}. Pour l\'envoyer maintenant, maintiens de nouveau l\'écran appuyé. Pour annuler, touche une fois. Si tu ne fais rien, elle part dans quelques secondes.',
+    LiveNotice.sosVoiceConfirm:
+        'J\'envoie l\'alerte à {name} ? Dis oui ou non. Pour annuler, tu peux aussi toucher l\'écran. Si tu ne réponds pas, elle part dans quelques secondes.',
     LiveNotice.sosCancelled: 'Alerte annulée.',
     LiveNotice.sosUnconfirmed:
         'J\'ai envoyé l\'alerte, mais le réseau n\'a pas confirmé qu\'elle est arrivée. Si tu peux, appelle ton contact ou le 123.',
@@ -499,6 +669,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
     LiveNotice.permissionBlocked:
         'A permissão de microfone está desativada. Toque na tela para abrir os ajustes e ativá-la.',
     LiveNotice.stopped: 'Assistente parado.',
+    LiveNotice.stopConfirm:
+        'Parar o assistente? Toque no botão de novo para confirmar.',
     LiveNotice.sosSent:
         'Alerta enviado ao seu contato de emergência. Pare em um lugar seguro e espere.',
     LiveNotice.sosFailed:
@@ -513,6 +685,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Continuo sem dados móveis. Para pedir ajuda, mantenha a tela pressionada por três segundos.',
     LiveNotice.sosGestureConfirm:
         'Alerta de emergência para {name}. Para enviar agora, mantenha a tela pressionada de novo. Para cancelar, toque uma vez. Se não fizer nada, ele é enviado em alguns segundos.',
+    LiveNotice.sosVoiceConfirm:
+        'Envio o alerta para {name}? Diga sim ou não. Para cancelar, também pode tocar na tela. Se não responder, ele é enviado em alguns segundos.',
     LiveNotice.sosCancelled: 'Alerta cancelado.',
     LiveNotice.sosUnconfirmed:
         'Enviei o alerta, mas a rede não confirmou que chegou. Se puder, ligue para o seu contato ou para o 123.',
@@ -551,6 +725,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
     LiveNotice.permissionBlocked:
         'Il permesso del microfono è disattivato. Tocca lo schermo per aprire le impostazioni e attivarlo.',
     LiveNotice.stopped: 'Assistente fermato.',
+    LiveNotice.stopConfirm:
+        "Fermare l'assistente? Tocca di nuovo il pulsante per confermare.",
     LiveNotice.sosSent:
         'Avviso inviato al tuo contatto di emergenza. Fermati in un luogo sicuro e aspetta.',
     LiveNotice.sosFailed:
@@ -565,6 +741,8 @@ const Map<String, Map<LiveNotice, String>> _notices = {
         'Ancora niente dati mobili. Per chiedere aiuto, tieni premuto lo schermo per tre secondi.',
     LiveNotice.sosGestureConfirm:
         'Avviso di emergenza per {name}. Per inviarlo subito, tieni premuto di nuovo lo schermo. Per annullare, tocca una volta. Se non fai nulla, viene inviato tra pochi secondi.',
+    LiveNotice.sosVoiceConfirm:
+        'Invio l\'avviso a {name}? Di sì o no. Per annullare, puoi anche toccare lo schermo. Se non rispondi, viene inviato tra pochi secondi.',
     LiveNotice.sosCancelled: 'Avviso annullato.',
     LiveNotice.sosUnconfirmed:
         'Ho inviato l\'avviso, ma la rete non ha confermato che sia arrivato. Se puoi, chiama il tuo contatto o il 123.',
@@ -763,7 +941,7 @@ class LiveUiState {
       return 'Modo reunión: escuchando en silencio. Llámame por mi nombre.';
     }
     return switch (status) {
-      LiveStatus.idle => 'Toca para empezar',
+      LiveStatus.idle => 'Iniciar asistente',
       LiveStatus.connecting => 'Conectando…',
       LiveStatus.connected => 'Escuchando',
       LiveStatus.error => 'Error de conexión. Toca para reintentar.',
@@ -864,16 +1042,46 @@ class LiveController extends Notifier<LiveUiState> {
   /// asistente no llama a `set_meeting_mode`, la app sale igual (LAZA-113).
   bool _leaveMeetingRequested = false;
 
+  /// La persona pidió entrar en modo reunión: si el asistente no llama a
+  /// `set_meeting_mode`, la app lo activa al terminar el turno.
+  bool _meetingRequested = false;
+
+  /// Lo que dijo la persona en este turno, para la red de seguridad del SOS, y
+  /// si el asistente ya llamó a la alerta.
+  final StringBuffer _sosHeard = StringBuffer();
+  bool _sosCalled = false;
+
+  /// Sonó entera la pregunta "¿Envío la alerta…?" del asistente.
+  bool _sosQuestionHeard = false;
+
   /// La persona consultó la Ruta A y estaba disponible: si se desactiva antes
   /// de Detener, la app se lo avisa sin que pregunte (HU-019, regla 3).
   bool _routeAOffered = false;
   Timer? _routeAWatch;
+
+  /// Perfiles de ruta curados descargados al iniciar (HU-022) y la guía de la
+  /// ruta activa, que avanza con el GPS cada [routeCheckInterval].
+  List<RouteProfile> _routes = const [];
+  RouteGuide? _routeGuide;
+  Timer? _routeWatch;
+
+  /// La persona pidió una ruta sin GPS confiable: la app la arranca sola en
+  /// cuanto el GPS lo sea, hasta [routeGpsWait] después del pedido.
+  String? _pendingRouteDestination;
+  DateTime? _pendingRouteSince;
 
   /// Ya se consultó si el panel pidió los logs en esta sesión (HU-045).
   bool _uploadChecked = false;
 
   /// TalkBack está hablando: en altavoz el micrófono no se envía (HU-023).
   bool _screenReaderSpeaking = false;
+
+  /// Última vez que habló TalkBack: mientras la persona explora la pantalla,
+  /// el asistente no observa.
+  DateTime? _screenReaderLastAt;
+
+  /// El micrófono está en pausa porque habla la voz del teléfono (avisos).
+  bool _micPausedForNotice = false;
   StreamSubscription<bool>? _screenReaderSpeech;
   Timer? _screenReaderTail;
 
@@ -896,6 +1104,17 @@ class LiveController extends Notifier<LiveUiState> {
   /// llamarla, la nota la guarda la app (Fase 0: se perdieron 4 notas).
   final StringBuffer _userTurnHeard = StringBuffer();
   bool _noteCalled = false;
+
+  /// El asistente preguntó qué anotar: la respuesta de la persona es la nota.
+  bool _noteTextExpected = false;
+
+  /// Última nota que guardó la app por su cuenta, para no repetirla si el
+  /// asistente llama después a `add_note` con lo mismo.
+  ({String text, DateTime at})? _appSavedNote;
+
+  /// Las notas suben al panel poco después de guardarse, no solo al detener:
+  /// si el teléfono se pierde o se daña en la calle, quedan en el servidor.
+  Timer? _notesUpload;
 
   /// La persona pidió pausar (`false`) o reanudar (`true`) las descripciones:
   /// si el asistente no llama a `set_descriptions`, la app lo guarda igual.
@@ -961,6 +1180,7 @@ class LiveController extends Notifier<LiveUiState> {
     ref.onDispose(_teardown);
     ref.onDispose(_stopBackground);
     ref.onDispose(() => _afterSpeechFallback?.cancel());
+    ref.onDispose(() => _notesUpload?.cancel());
     // Español por defecto; si la persona cambió el idioma por voz, se conserva.
     return LiveUiState(language: _settings.getLanguage());
   }
@@ -968,6 +1188,9 @@ class LiveController extends Notifier<LiveUiState> {
   void _teardown() {
     _routeAWatch?.cancel();
     _routeAWatch = null;
+    // La ruta guiada no se corta con la sesión: sigue tras reconectar, al
+    // bloquear la pantalla o al cambiar de idioma. Solo Detener y stop_route
+    // la terminan. El 27-oct un corte la borró antes del cruce de la Quinta.
     _cameraSwitch?.cancel();
     _cameraSwitch = null;
     _stopObserving();
@@ -976,6 +1199,9 @@ class LiveController extends Notifier<LiveUiState> {
     _turnAllowed = false;
     _meetingConfirmTurn = false;
     _leaveMeetingRequested = false;
+    _meetingRequested = false;
+    _sosHeard.clear();
+    _sosCalled = false;
     // Lo que alcanzó a decir en esta sesión se registra aquí: si no, se pegaría
     // al primer turno de la sesión siguiente.
     _logAssistantSaid(' (cortado al cerrar la sesión)');
@@ -985,6 +1211,7 @@ class LiveController extends Notifier<LiveUiState> {
     _screenReaderTail?.cancel();
     _screenReaderTail = null;
     _screenReaderSpeaking = false;
+    _screenReaderLastAt = null;
     _media.stopMic();
     _media.stopCamera();
     _media.destroyPlayer();
@@ -1021,7 +1248,8 @@ class LiveController extends Notifier<LiveUiState> {
         _announce(LiveNotice.permissionBlocked);
         return;
     }
-    if (await _askBatteryExemptionOnce() || !ref.mounted) return;
+    if (await _ensureBatteryExemption() || !ref.mounted) return;
+    unawaited(_settings.setLastSessionStart(ref.read(liveClockProvider)()));
     // La sesión sigue con la pantalla bloqueada (HU-017).
     unawaited(_startBackground());
     // La ubicación acompaña a la sesión; sin permiso la sesión sigue igual.
@@ -1036,16 +1264,23 @@ class LiveController extends Notifier<LiveUiState> {
     _announce(LiveNotice.connecting);
   }
 
-  /// La primera vez, antes de empezar, pide excluir a Lazarus de la optimización
-  /// de batería (si no, Android puede suspenderla con la pantalla bloqueada) y lo
-  /// explica en voz alta, con el ajuste extra de Xiaomi. Esa vez no se abre la
-  /// sesión (el saludo se cruzaría con el aviso y el diálogo): la persona vuelve a
-  /// tocar la pantalla. Devuelve `true` si se pidió.
-  Future<bool> _askBatteryExemptionOnce() async {
-    if (_settings.getBatteryExemptionAsked()) return false;
-    await _settings.setBatteryExemptionAsked();
+  /// Antes de empezar, pide excluir a Lazarus de la optimización de batería
+  /// (si no, Android puede cerrarla con la pantalla bloqueada) y lo explica en
+  /// voz alta, con el ajuste extra de Xiaomi. Lo pide la primera vez y, otra
+  /// vez, si Android cerró la app en la sesión anterior: la exención se puede
+  /// perder (p. ej. al actualizar la app) y el 24 y el 26 de octubre el sistema
+  /// cerró la app en dos marcas distintas. Esa vez no se abre la sesión (el
+  /// saludo se cruzaría con el aviso y el diálogo): la persona vuelve a tocar la
+  /// pantalla. Devuelve `true` si se pidió.
+  Future<bool> _ensureBatteryExemption() async {
+    final killed = await _previousSessionKilledBySystem();
     final status = await _background.batteryStatus();
-    if (status.exempt || !ref.mounted) return false;
+    if (!ref.mounted || status.exempt) return false;
+    if (_settings.getBatteryExemptionAsked() && !killed) {
+      _log('[Lazarus] batería: con optimización (ya se pidió la exención)');
+      return false;
+    }
+    await _settings.setBatteryExemptionAsked();
     _announce(
       status.manufacturer == 'xiaomi'
           ? LiveNotice.batteryExemptionXiaomi
@@ -1057,6 +1292,33 @@ class LiveController extends Notifier<LiveUiState> {
     );
     return true;
   }
+
+  static const _exitLabels = {
+    'system': 'Android cerró la app',
+    'user': 'la app se cerró desde recientes o Ajustes',
+    'crash': 'la app falló',
+  };
+
+  /// Si la sesión anterior quedó abierta (sin Detener) y el proceso terminó
+  /// después, lo registra con el motivo de Android (evidencia de HU-017).
+  /// `true` solo si fue el sistema el que la cerró.
+  Future<bool> _previousSessionKilledBySystem() async {
+    final started = _settings.getLastSessionStart();
+    if (started == null) return false;
+    await _settings.setLastSessionStart(null);
+    final exit = await _background.lastExit();
+    if (exit == null || !exit.at.isAfter(started)) return false;
+    final detail = exit.description.isEmpty ? '' : ', ${exit.description}';
+    _log(
+      '[Lazarus] la sesión anterior no terminó con Detener: '
+      '${_exitLabels[exit.kind] ?? "el proceso terminó"} a las '
+      '${_clockTime(exit.at)} (motivo ${exit.reason}$detail)',
+    );
+    return exit.kind == 'system';
+  }
+
+  static String _clockTime(DateTime t) =>
+      [t.hour, t.minute, t.second].map((v) => '$v'.padLeft(2, '0')).join(':');
 
   Future<void> _startBackground() async {
     if (_backgroundOn) return;
@@ -1226,9 +1488,10 @@ class LiveController extends Notifier<LiveUiState> {
   /// Android no deja usar la cámara sin la app visible. Avisarle al asistente
   /// no basta: en la caminata de CP-LAZA-45 siguió describiendo la última imagen
   /// como si fuera lo que la persona tenía delante, y hasta dio indicaciones con
-  /// ella. Por eso, al bloquear se abre una sesión nueva sin ninguna imagen, en
-  /// modo pantalla bloqueada; al desbloquear, tras una espera por si fue sin
-  /// querer, se vuelve a una sesión con cámara (HU-017).
+  /// ella. Por eso, al bloquear la cámara se pausa enseguida y, si la app sigue
+  /// oculta unos segundos, se abre una sesión nueva sin ninguna imagen, en modo
+  /// pantalla bloqueada; al desbloquear, tras una espera por si fue sin querer,
+  /// se vuelve a una sesión con cámara (HU-017).
   void onVisibilityChanged(bool visible) {
     if (visible == _visible) return;
     _visible = visible;
@@ -1268,7 +1531,7 @@ class LiveController extends Notifier<LiveUiState> {
     // hace al salir de esos modos.
     if (state.micMuted || state.meetingMode) return;
     _cameraSwitch = Timer(
-      blind ? Duration.zero : ref.read(cameraUnlockDelayProvider),
+      ref.read(blind ? cameraLockDelayProvider : cameraUnlockDelayProvider),
       _switchCameraSession,
     );
   }
@@ -1409,6 +1672,11 @@ class LiveController extends Notifier<LiveUiState> {
       case LiveCloseCause.devicePending:
         state = state.copyWith(status: LiveStatus.error);
         _announce(LiveNotice.devicePending);
+        // El servidor dice "pendiente" también si ya no conoce el token
+        // (27-oct: el Xiaomi no salía en el panel hasta tocar Detener).
+        unawaited(
+          ref.read(deviceAccessRepositoryProvider).registerAgainIfUnknown(),
+        );
       case LiveCloseCause.deviceDisabled:
         state = state.copyWith(status: LiveStatus.error);
         _announce(LiveNotice.deviceDisabled);
@@ -1504,6 +1772,20 @@ class LiveController extends Notifier<LiveUiState> {
         if (_onSpeaker && _assistantActive) return;
         // Ni mientras habla TalkBack: su voz no es la persona (HU-023).
         if (_onSpeaker && _screenReaderSpeaking) return;
+        // Ni mientras suena un aviso del teléfono: en la prueba del 21-oct el
+        // asistente oyó "Modo reunión. Te escucho en silencio…" como si lo
+        // dijera la persona.
+        if (_onSpeaker && ref.read(announcerSpeakingProvider).value) {
+          if (!_micPausedForNotice) {
+            _micPausedForNotice = true;
+            _log('[Lazarus] mic: en pausa mientras habla el teléfono');
+          }
+          return;
+        }
+        if (_micPausedForNotice) {
+          _micPausedForNotice = false;
+          _log('[Lazarus] mic: terminó el aviso del teléfono → reabierto');
+        }
         _trackVoice(pcm);
         _micChunks++;
         if (_micChunks == 1) _log('[Lazarus] mic: primer chunk enviado');
@@ -1529,10 +1811,105 @@ class LiveController extends Notifier<LiveUiState> {
     }
   }
 
+  /// Tiempo para confirmar Detener después de que termina la pregunta. El
+  /// 26-oct la pregunta tardó 6,8 s en terminar porque el asistente habló
+  /// encima: una ventana contada desde el primer toque volvía a preguntar a
+  /// quien esperaba a oírla entera.
+  static const Duration stopConfirmWindow = Duration(seconds: 4);
+
+  /// Si no se supo cuándo terminó la pregunta (el motor de voz no avisó), se
+  /// cuenta desde el primer toque: la pregunta y unos 4 s para reaccionar.
+  static const Duration stopConfirmFallback = Duration(seconds: 8);
+
+  /// Tope: aunque la pregunta siga sonando, pasado este tiempo se vuelve a
+  /// preguntar.
+  static const Duration stopConfirmMax = Duration(seconds: 20);
+
+  DateTime? _stopArmedAt;
+  DateTime? _stopQuestionEndedAt;
+
+  /// Tras Detener, el botón desaparece y la pantalla entera vuelve a iniciar:
+  /// un toque de más en este tiempo no abre otra sesión (26-oct).
+  static const Duration restartGuard = Duration(milliseconds: 1500);
+  DateTime? _stoppedByButtonAt;
+
+  /// Si un toque de Detener ahora confirmaría: mientras suena la pregunta y
+  /// hasta [stopConfirmWindow] después de que termine.
+  bool _stopConfirmOpen(DateTime now) {
+    final armed = _stopArmedAt;
+    if (armed == null) return false;
+    final sinceArmed = now.difference(armed);
+    if (sinceArmed > stopConfirmMax) return false;
+    if (ref.read(announcerSpeakingProvider).value || _screenReaderSpeaking) {
+      return true;
+    }
+    final ended = _stopQuestionEndedAt;
+    return ended != null
+        ? now.difference(ended) <= stopConfirmWindow
+        : sinceArmed <= stopConfirmFallback;
+  }
+
+  /// La voz del teléfono terminó un aviso mientras se espera la confirmación.
+  void _onAnnouncerSpeaking() {
+    if (_stopArmedAt == null || ref.read(announcerSpeakingProvider).value) {
+      return;
+    }
+    _stopQuestionEndedAt = ref.read(liveClockProvider)();
+  }
+
+  void _disarmStop() {
+    if (_stopArmedAt == null) return;
+    _stopArmedAt = null;
+    _stopQuestionEndedAt = null;
+    ref.read(announcerSpeakingProvider).removeListener(_onAnnouncerSpeaking);
+  }
+
+  /// Botón Detener: el primer toque pregunta y el segundo, mientras suena la
+  /// pregunta o poco después, detiene. En la jornada del 24-oct un participante
+  /// con TalkBack detuvo la app 11 veces en 40 min sin querer. Mientras se
+  /// confirma, el asistente calla para que la pregunta se oiga sola.
+  void requestStop() {
+    final now = ref.read(liveClockProvider)();
+    if (_stopConfirmOpen(now)) {
+      _disarmStop();
+      _log('[Lazarus] Detener confirmado con el botón');
+      disconnect();
+      _stoppedByButtonAt = now;
+      return;
+    }
+    _disarmStop();
+    _stopArmedAt = now;
+    ref.read(announcerSpeakingProvider).addListener(_onAnnouncerSpeaking);
+    final talkBack = ref.read(screenReaderActiveProvider)();
+    _log(
+      '[Lazarus] Detener: primer toque, se pide confirmación '
+      '(${talkBack ? "con" : "sin"} TalkBack)',
+    );
+    _quietAssistantForStop();
+    _announce(LiveNotice.stopConfirm);
+  }
+
+  /// Corta lo que el asistente esté diciendo; lo que siga llegando mientras se
+  /// confirma Detener se descarta y no se envía `[OBSERVA]`.
+  void _quietAssistantForStop() {
+    _endObserve();
+    if (!_assistantActive) return;
+    _log('[Lazarus] Detener: el asistente calla mientras se confirma');
+    _logAssistantSaid(' (cortado: se pidió Detener)');
+    _assistantActive = false;
+    _assistantTurnDone = false;
+    _drainFallback?.cancel();
+    _queuedAudioMs = 0;
+    unawaited(_media.interruptPlayback());
+  }
+
   /// Botón Detener: cierra la sesión; la próxima empieza con la presentación.
   /// Botón Detener: cierra la sesión, libera micrófono y cámara y avisa con una
   /// frase corta (sin reconectar).
   void disconnect() {
+    _disarmStop();
+    // Terminó con Detener: si Android cierra la app después, no es un corte.
+    unawaited(_settings.setLastSessionStart(null));
     // Logs de campo al panel (HU-045): lo nuevo desde la última subida.
     unawaited(_uploadLogs('al detener'));
     _offlineReminder?.cancel();
@@ -1542,6 +1919,7 @@ class LiveController extends Notifier<LiveUiState> {
       ref.read(sosControllerProvider.notifier).cancel();
     }
     _teardown();
+    _stopRouteGuide();
     _stopBackground();
     _endTelemetry('stopped');
     _routeAOffered = false;
@@ -1573,9 +1951,19 @@ class LiveController extends Notifier<LiveUiState> {
       _cancelGestureSos();
       return;
     }
+    if (ref.read(sosControllerProvider) == SosStatus.awaitingConfirmation) {
+      _cancelVoiceSos();
+      return;
+    }
     if (state.micMuted) {
       _resumeFromMute();
     } else if (!state.isLive) {
+      final stopped = _stoppedByButtonAt;
+      if (stopped != null &&
+          ref.read(liveClockProvider)().difference(stopped) < restartGuard) {
+        _log('[Lazarus] toque justo después de Detener: no inicia');
+        return;
+      }
       connect();
     }
   }
@@ -1608,10 +1996,16 @@ class LiveController extends Notifier<LiveUiState> {
     switch (message.type) {
       case LiveResponseType.setupComplete:
         _log('[Lazarus] setupComplete → sesión lista, arrancando media');
+        // Lo dicho antes de una sesión nueva (p. ej. al bloquear la pantalla)
+        // no se responde en esta: medirlo daba latencias falsas de hasta 56 s.
+        _lastVoiceAt = null;
+        _lastWordAt = null;
+        _wordSinceReply = false;
         // El panel pidió los logs de este teléfono (HU-045): se suben ya.
         if (!_uploadChecked) {
           _uploadChecked = true;
           unawaited(_uploadLogsIfRequested());
+          unawaited(_loadRoutes());
         }
         state = state.copyWith(status: LiveStatus.connected);
         _telemetry.event('session_start', {
@@ -1627,6 +2021,8 @@ class LiveController extends Notifier<LiveUiState> {
           const Duration(seconds: 30),
           (_) => checkRouteA(),
         );
+        final routeGoesOn =
+            _pendingKickoff != _PendingKickoff.intro && _routeGuide != null;
         switch (_pendingKickoff) {
           case _PendingKickoff.voice:
             _expectReply();
@@ -1648,6 +2044,8 @@ class LiveController extends Notifier<LiveUiState> {
             _session.sendKickoff();
         }
         _pendingKickoff = _PendingKickoff.intro;
+        // La sesión nueva del asistente no sabe que hay una ruta en curso.
+        if (routeGoesOn) _sendRouteGoesOn();
         _markActivity();
         _startMedia();
         // La pantalla cambió mientras se conectaba.
@@ -1673,6 +2071,10 @@ class LiveController extends Notifier<LiveUiState> {
         ref.read(sosControllerProvider.notifier).personSpoke();
         if (asksTotalSilence(_recentHeard())) _silenceRequested = true;
         _userTurnHeard.write(t.text);
+        _sosHeard.write(t.text);
+        if (!state.meetingMode && asksMeetingMode(_recentHeard())) {
+          _meetingRequested = true;
+        }
         final describing = asksDescriptions(_recentHeard());
         if (describing != null) _describingRequested = describing;
         if (state.meetingMode &&
@@ -1706,6 +2108,9 @@ class LiveController extends Notifier<LiveUiState> {
         _handleToolCall(call);
       case LiveResponseType.audio:
         final pcm = message.data as String;
+        // Mientras se confirma Detener, el asistente no habla encima de la
+        // pregunta (26-oct).
+        if (_stopConfirmOpen(ref.read(liveClockProvider)())) return;
         // Modo reunión: calla salvo que lo llamen por su nombre. El audio se
         // retiene hasta saberlo (la transcripción puede llegar después).
         if (state.meetingMode && !_turnAllowed) {
@@ -1727,6 +2132,8 @@ class LiveController extends Notifier<LiveUiState> {
           _endMeetingTurn() ? ' (descartado: modo reunión)' : ' (interrumpido)',
         );
         _log('[Lazarus] INTERRUMPIDO (barge-in: el usuario habló encima)');
+        // La pregunta del SOS cortada a medias no cuenta como oída.
+        _sosQuestionHeard = false;
         _telemetry.event('interrupted');
         _assistantActive = false;
         _assistantTurnDone = false;
@@ -1746,6 +2153,8 @@ class LiveController extends Notifier<LiveUiState> {
         _applyRequestedSilence();
         _applyRequestedDescriptions();
         _applyRequestedMeetingExit();
+        _applyRequestedMeeting();
+        _applyRequestedSos();
         // El asistente terminó de generar; el audio aún puede estar drenando.
         // El mic se reabrirá cuando la cola se vacíe (onDrained). Si el
         // drenado llegó primero (respuesta corta), reabre ya mismo.
@@ -1779,6 +2188,9 @@ class LiveController extends Notifier<LiveUiState> {
   /// Reproduce un fragmento de audio del asistente (en altavoz cierra el mic).
   void _playAssistantAudio(String pcm) {
     _audioInChunks++;
+    if (ref.read(sosControllerProvider) == SosStatus.awaitingConfirmation) {
+      _sosQuestionHeard = true;
+    }
     if (_afterSpeech.isNotEmpty) _afterSpeechHeard = true;
     if (_audioInChunks == 1) {
       _log(
@@ -1803,6 +2215,8 @@ class LiveController extends Notifier<LiveUiState> {
         _telemetry.voiceToVoice(ms);
       }
       _wordSinceReply = false;
+      // La voz que ya tuvo respuesta no cuenta para la siguiente.
+      _lastVoiceAt = null;
       // Mientras habla, la persona no puede contestar a "¿Envío la alerta…?".
       ref.read(sosControllerProvider.notifier).assistantSpeaking();
     }
@@ -1883,7 +2297,17 @@ class LiveController extends Notifier<LiveUiState> {
     if (_cameraPaused) return;
     if (_assistantActive) return;
     if (ref.read(sosControllerProvider) != SosStatus.idle) return;
+    if (_stopConfirmOpen(ref.read(liveClockProvider)())) return;
     final now = DateTime.now();
+    // Con TalkBack hablando o recién callado, la persona está explorando la
+    // pantalla: el asistente no le habla encima.
+    final screenReaderAt = _screenReaderLastAt;
+    if (_screenReaderSpeaking ||
+        (screenReaderAt != null &&
+            now.difference(screenReaderAt) <
+                ref.read(screenReaderObserveQuietProvider))) {
+      return;
+    }
     // Se espera una respuesta (o un tiempo máximo) antes de observar, para no
     // cortarla; y tras una respuesta, una pausa por si la persona sigue.
     final waitFrom = _replyWaitFrom;
@@ -1946,22 +2370,30 @@ class LiveController extends Notifier<LiveUiState> {
 
   /// Red de seguridad del silencio total: el asistente dijo que se silenciaba
   /// pero no llamó a la función, así que la app deja de enviar igual.
-  /// Red de seguridad de las notas: el asistente dijo "Anotado." sin llamar a
-  /// `add_note`, así que la app guarda lo que pidió la persona.
+  /// Red de seguridad de las notas: la persona pidió anotar y el asistente no
+  /// llamó a `add_note`, así que la app guarda lo que pidió, diga lo que diga
+  /// el asistente. El 27-oct se perdieron 15 notas: el asistente respondió
+  /// "Anoto que son 22 pasos" o "Anotado: …" y el respaldo solo reconocía
+  /// "Anotado.", o la transcripción decía "A nota que…".
   void _applyRequestedNote(String said) {
     // Turno sin respuesta hablada (p. ej. el de la función): la persona puede
     // seguir hablando y la respuesta llega en el turno siguiente.
     if (said.trim().isEmpty) return;
     final heard = _userTurnHeard.toString();
     final called = _noteCalled;
+    final expected = _noteTextExpected;
     _userTurnHeard.clear();
     _noteCalled = false;
-    if (called || !saysNoted(said)) return;
-    final text = noteRequestText(heard);
-    if (text == null) return;
+    _noteTextExpected = !called && asksWhatToNote(said);
+    if (called) return;
+    final text = noteRequestText(heard) ?? (expected ? heard.trim() : null);
+    if (text == null || text.isEmpty) return;
     _log(
-      '[Lazarus] nota guardada por la app (el asistente dijo "Anotado" sin llamar a add_note)',
+      saysNoted(said)
+          ? '[Lazarus] nota guardada por la app (el asistente dijo "Anotado" sin llamar a add_note)'
+          : '[Lazarus] nota guardada por la app (la persona pidió anotar y el asistente no llamó a add_note)',
     );
+    _appSavedNote = (text: text, at: ref.read(liveClockProvider)());
     unawaited(_addFieldNote(text));
   }
 
@@ -1988,6 +2420,7 @@ class LiveController extends Notifier<LiveUiState> {
           _log('[Lazarus] mic: en pausa mientras habla TalkBack');
         }
         _screenReaderSpeaking = true;
+        _screenReaderLastAt = DateTime.now();
         return;
       }
       _screenReaderTail?.cancel();
@@ -1997,6 +2430,11 @@ class LiveController extends Notifier<LiveUiState> {
         }
         _screenReaderSpeaking = false;
         _screenReaderTail = null;
+        _screenReaderLastAt = DateTime.now();
+        // Con TalkBack, la pregunta de Detener la dice el lector de pantalla.
+        if (_stopArmedAt != null) {
+          _stopQuestionEndedAt = ref.read(liveClockProvider)();
+        }
       });
     });
   }
@@ -2007,11 +2445,20 @@ class LiveController extends Notifier<LiveUiState> {
     }
   }
 
-  Future<void> _uploadLogs(String reason) async {
-    final files = await ref.read(deviceAccessRepositoryProvider).uploadLogs();
-    if (files > 0) {
-      _log('[Lazarus] logs subidos al panel ($reason): $files archivos');
-    }
+  /// Subidas en fila: dos a la vez leen los mismos offsets y mandan lo mismo
+  /// (jornada del 24-oct: el .zip de un teléfono traía la evidencia repetida al
+  /// tocar Detener seguido con la red lenta).
+  Future<void> _uploads = Future<void>.value();
+
+  Future<void> _uploadLogs(String reason) {
+    final run = _uploads.then((_) async {
+      final files = await ref.read(deviceAccessRepositoryProvider).uploadLogs();
+      if (files > 0) {
+        _log('[Lazarus] logs subidos al panel ($reason): $files archivos');
+      }
+    });
+    _uploads = run.catchError((Object _) {});
+    return run;
   }
 
   RouteAStatus _routeAStatus() {
@@ -2096,6 +2543,208 @@ class LiveController extends Notifier<LiveUiState> {
     _session.sendRouteNotice(notice);
   }
 
+  /// Descarga los perfiles de ruta (o usa los guardados, sin datos).
+  Future<void> _loadRoutes() async {
+    final body = await ref.read(deviceAccessRepositoryProvider).routeProfiles();
+    if (body == null || !ref.mounted) return;
+    try {
+      _routes = RouteProfile.listFromJson(body);
+    } on Object {
+      return;
+    }
+    _log('[Lazarus] ruta: ${_routes.length} perfiles disponibles');
+  }
+
+  /// Respuesta de `start_route` (HU-022): elige el perfil que pasa cerca y lo
+  /// retoma en el punto más cercano. Sin GPS confiable, deja el pedido en
+  /// espera y la ruta arranca sola cuando el GPS lo sea.
+  String _startRoute(String destination) {
+    final location = ref.read(locationControllerProvider);
+    final fix = location.fix;
+    final active = _routeGuide;
+    if (active != null && !active.finished) {
+      final picked = fix == null ? null : pickRoute(_routes, fix, destination);
+      if (picked == null || picked.slug == active.profile.slug) {
+        return _routeGoesOn(active);
+      }
+    }
+    // Una ruta nueva reemplaza a la anterior y a su revisión periódica (antes
+    // quedaban dos temporizadores revisando la ruta).
+    _stopRouteGuide();
+    if (fix == null || location.reliability != GpsReliability.reliable) {
+      if (_routes.isEmpty) return _noRoute();
+      _pendingRouteDestination = destination;
+      _pendingRouteSince = ref.read(liveClockProvider)();
+      _routeWatch = Timer.periodic(routeCheckInterval, (_) => checkRoute());
+      _log('[Lazarus] ruta: en espera de GPS confiable');
+      return 'waiting_gps: the GPS is not reliable yet. The app will start '
+          "the route by itself as soon as it is, and will send '[RUTA]'. Tell "
+          'the person in one short sentence to keep going with their companion; '
+          'do not describe the route.';
+    }
+    final started = _beginRoute(destination, fix);
+    if (started == null) return _noRoute();
+    _routeWatch = Timer.periodic(routeCheckInterval, (_) => checkRoute());
+    return started;
+  }
+
+  /// `start_route` con la misma ruta activa: no se reinicia. El 27-oct el
+  /// asistente la pidió otra vez 4 veces en la ida, y cada vez repetía el aviso
+  /// de ruta de prueba y la instrucción del punto, aunque ya no correspondía.
+  String _routeGoesOn(RouteGuide guide) {
+    final total = guide.profile.points.length;
+    final next = guide.nextPoint!;
+    _log(
+      '[Lazarus] ruta: ya activa "${guide.profile.slug}", no se reinicia '
+      '(siguiente: punto ${guide.nextIndex + 1})',
+    );
+    return "already_active: the app is already guiding along '${guide.profile.name}'. "
+        "Next: point ${guide.nextIndex + 1} of $total, '${next.name}'. Do not "
+        'repeat the test-route warning or the last instruction; tell the person '
+        "in one short sentence that the guidance goes on. The app will keep "
+        "sending '[RUTA]' at each point.";
+  }
+
+  String _noRoute() {
+    _log(
+      '[Lazarus] ruta: ningún perfil pasa cerca (${_routes.length} cargados)',
+    );
+    return 'none: there is no curated route loaded that starts near here. '
+        'Tell the person in one sentence and keep NO ROUTES.';
+  }
+
+  /// Arranca la guía en el punto del perfil más cercano y devuelve qué decirle
+  /// al asistente, o `null` si ningún perfil pasa cerca.
+  String? _beginRoute(String destination, LocationFix fix) {
+    final route = pickRoute(_routes, fix, destination);
+    if (route == null) return null;
+    final startAt = nearestPointIndex(route, fix);
+    _routeGuide = RouteGuide(route, startAt: startAt);
+    final total = route.points.length;
+    _log(
+      '[Lazarus] ruta: iniciada "${route.slug}" ($total puntos, '
+      '${route.validatedInField ? "validada" : "sin validar"}'
+      '${startAt > 0 ? ", desde el punto ${startAt + 1}" : ""})',
+    );
+    final warning = route.validatedInField
+        ? ''
+        : 'not validated: it is a test route; tell the person it must only be '
+              'used with a companion. ';
+    final resume = startAt > 0
+        ? "Resuming at point ${startAt + 1} of $total, "
+              "'${route.points[startAt].name}', the closest to the person. "
+        : '';
+    return "ok: guiding along '${route.name}', from ${route.origin} to "
+        '${route.destination}, $total points. $resume$warning'
+        "The app will send '[RUTA]' at each point: do not describe the route "
+        'yourself.';
+  }
+
+  void _stopRouteGuide() {
+    _routeWatch?.cancel();
+    _routeWatch = null;
+    _routeGuide = null;
+    _pendingRouteDestination = null;
+    _pendingRouteSince = null;
+  }
+
+  /// Avanza la ruta activa con la última posición y, si llegó o se acerca a un
+  /// punto, se lo pasa al asistente (HU-022). En modo reunión solo pasan los
+  /// cruces y los riesgos altos. Si la ruta espera el GPS, la arranca cuando
+  /// es confiable.
+  @visibleForTesting
+  void checkRoute() {
+    if (!ref.mounted || !_session.connected) return;
+    if (_pendingRouteDestination != null) {
+      _startPendingRoute();
+      return;
+    }
+    final guide = _routeGuide;
+    if (guide == null) return;
+    final location = ref.read(locationControllerProvider);
+    final fix = location.fix;
+    if (fix == null) return;
+    final event = guide.update(fix, location.reliability);
+    if (event == null) return;
+    final message = describeRouteEvent(
+      event,
+      fix,
+      (p) => ref
+          .read(locationControllerProvider.notifier)
+          .clockHourTowards(p.latitude, p.longitude),
+    );
+    if (guide.finished) _stopRouteGuide();
+    if (event.kind == RouteEventKind.passed) {
+      _log('[Lazarus] ruta (sin aviso): $message');
+      return;
+    }
+    final point = event.point;
+    if (state.meetingMode &&
+        point.crossing == null &&
+        point.risk != RouteRisk.high) {
+      _log('[Lazarus] ruta (en modo reunión, no se dice): $message');
+      return;
+    }
+    _log('[Lazarus] ruta: $message');
+    _sendRoute(message);
+  }
+
+  void _sendRouteGoesOn() {
+    final guide = _routeGuide!;
+    final total = guide.profile.points.length;
+    final next = guide.nextPoint;
+    _log('[Lazarus] ruta: sigue tras la sesión nueva "${guide.profile.slug}"');
+    _sendRoute(
+      "still guiding: the app is still guiding along '${guide.profile.name}'"
+      '${next == null ? '' : ". Next: point ${guide.nextIndex + 1} of $total, '${next.name}'"}. '
+      'Tell the person in one short sentence that the route guidance goes on. '
+      "The app will keep sending '[RUTA]' at each point: do not describe the "
+      'route yourself.',
+    );
+  }
+
+  void _sendRoute(String message) {
+    _afterAssistantAudio(() {
+      if (!ref.mounted || !_session.connected) return;
+      _expectReply();
+      _session.sendRouteGuide(message);
+    });
+  }
+
+  void _startPendingRoute() {
+    final destination = _pendingRouteDestination!;
+    final location = ref.read(locationControllerProvider);
+    final fix = location.fix;
+    if (fix == null || location.reliability != GpsReliability.reliable) {
+      final since = _pendingRouteSince;
+      if (since != null &&
+          ref.read(liveClockProvider)().difference(since) >= routeGpsWait) {
+        _stopRouteGuide();
+        _log('[Lazarus] ruta: no se inició, el GPS no fue confiable a tiempo');
+        _sendRoute(
+          'not started: the GPS was not reliable for '
+          '${routeGpsWait.inMinutes} minutes, so the route did not start. '
+          'Tell the person in one short sentence that they can ask again '
+          'in the open.',
+        );
+      }
+      return;
+    }
+    _pendingRouteDestination = null;
+    _pendingRouteSince = null;
+    final started = _beginRoute(destination, fix);
+    if (started == null) {
+      _stopRouteGuide();
+      _log('[Lazarus] ruta: GPS confiable, pero ningún perfil pasa cerca');
+      _sendRoute(
+        'not started: the GPS is reliable now, but no curated route passes '
+        'near here. Tell the person in one sentence and keep NO ROUTES.',
+      );
+      return;
+    }
+    _sendRoute('started now that the GPS is reliable. $started');
+  }
+
   /// Guarda una nota de campo con la hora y la última posición conocida, y
   /// devuelve la respuesta para el asistente (HU-024, criterio 3).
   Future<String> _addFieldNote(String raw) async {
@@ -2123,6 +2772,10 @@ class LiveController extends Notifier<LiveUiState> {
           'the person, in one sentence, that you could not write it down.';
     }
     _notesThisSession++;
+    _notesUpload?.cancel();
+    _notesUpload = Timer(noteUploadDelay, () {
+      if (ref.mounted) unawaited(_uploadLogs('notas nuevas'));
+    });
     String two(int n) => n.toString().padLeft(2, '0');
     final time = '${two(at.hour)}:${two(at.minute)}';
     final where = fix == null
@@ -2132,6 +2785,11 @@ class LiveController extends Notifier<LiveUiState> {
     final position = fix == null
         ? 'without position (no GPS yet)'
         : 'with the position';
+    if (isPlaceMarkerNote(text)) {
+      return 'ok: note saved at $time $position, but it only marks the spot. '
+          'Confirm in one word and then ask in one short sentence what is at '
+          'this spot.';
+    }
     return 'ok: note saved at $time $position. Reply ONLY with one word '
         'confirming it was written down.';
   }
@@ -2149,6 +2807,53 @@ class LiveController extends Notifier<LiveUiState> {
     );
     state = state.copyWith(meetingMode: false);
     _whenAssistantFinishes(_syncCameraSession);
+  }
+
+  /// Red de seguridad de "voy a estar en una reunión": el asistente terminó el
+  /// turno sin llamar a `set_meeting_mode`, así que la app entra en el modo
+  /// igual y lo confirma con la voz del teléfono.
+  void _applyRequestedMeeting() {
+    if (!_meetingRequested) return;
+    _meetingRequested = false;
+    if (state.meetingMode || state.micMuted) return;
+    _log(
+      '[Lazarus] modo reunión activado por la app (el asistente no llamó a set_meeting_mode)',
+    );
+    state = state.copyWith(meetingMode: true);
+    _turnAllowed = false;
+    _afterAssistantAudio(() {
+      if (state.meetingMode) _announce(LiveNotice.meetingOn);
+    });
+  }
+
+  /// Red de seguridad del SOS: la persona dijo "SOS" y el asistente cerró el
+  /// turno sin llamar a `trigger_sos` (prueba del 21-oct). La app sigue con el
+  /// SOS del gesto: pregunta con la voz del teléfono y, sin respuesta, la envía.
+  void _applyRequestedSos() {
+    final heard = _sosHeard.toString();
+    final called = _sosCalled;
+    _sosHeard.clear();
+    _sosCalled = false;
+    if (called || !asksSos(heard, name: _settings.getAssistantName())) return;
+    if (ref.read(sosControllerProvider) != SosStatus.idle) return;
+    _log(
+      '[Lazarus] SOS iniciado por la app (el asistente no llamó a trigger_sos)',
+    );
+    _afterAssistantAudio(() {
+      if (ref.mounted && ref.read(sosControllerProvider) == SosStatus.idle) {
+        unawaited(onSosGesture());
+      }
+    });
+  }
+
+  /// Al terminar el turno: si el audio del asistente sigue sonando, espera a
+  /// que termine; si no sonó nada, actúa ya.
+  void _afterAssistantAudio(void Function() action) {
+    if (_assistantActive) {
+      _whenAssistantFinishes(action);
+    } else {
+      action();
+    }
   }
 
   /// Red de seguridad de "deja de describir" / "vuelve a describir": el
@@ -2234,8 +2939,51 @@ class LiveController extends Notifier<LiveUiState> {
 
   /// La alerta se envió sola (nadie respondió a la confirmación): el asistente
   /// lo dice; si la sesión ya no está, lo dice la voz del teléfono.
+  /// La cuenta del SOS por voz arranca cuando la persona oyó la pregunta. En la
+  /// prueba del 21-oct un ruido cortó "¿Envío la…" antes de que sonara y la
+  /// alerta salió sin que se oyera: si no sonó entera, la pregunta la hace la
+  /// voz del teléfono y la cuenta espera a que termine.
+  void _startSosCountdown() {
+    if (!ref.mounted) return;
+    final sos = ref.read(sosControllerProvider.notifier);
+    if (ref.read(sosControllerProvider) != SosStatus.awaitingConfirmation) {
+      return;
+    }
+    if (_sosQuestionHeard) {
+      sos.startCountdown(_onSosAutoSent);
+      return;
+    }
+    _log('[Lazarus] SOS: la pregunta no sonó; la hace el teléfono');
+    _announceText(
+      noticeText(
+        LiveNotice.sosVoiceConfirm,
+        state.language,
+        name: sos.contactName() ?? '',
+      ),
+    );
+    Future.delayed(ref.read(sosQuestionRepeatDelayProvider), () {
+      if (ref.mounted) sos.startCountdown(_onSosAutoSent);
+    });
+  }
+
+  /// Un toque cancela la alerta por voz que espera confirmación: el asistente
+  /// recibe el resultado para no volver a preguntar.
+  void _cancelVoiceSos() {
+    final result = ref.read(sosControllerProvider.notifier).cancel();
+    _announce(LiveNotice.sosCancelled);
+    if (_session.connected) {
+      _session.sendSosResult(
+        '$result The person cancelled it with a tap and the phone already '
+        'said "Alerta cancelada": do not repeat it.',
+      );
+    }
+  }
+
   void _onSosAutoSent(String result) {
     if (!ref.mounted) return;
+    // La respuesta que sigue no es a algo que dijo la persona: no cuenta para
+    // la latencia (prueba del 21-oct: midió 26 s, la espera de la alerta).
+    _wordSinceReply = false;
     if (_session.connected && state.status == LiveStatus.connected) {
       _turnAllowed = true; // debe sonar aunque esté en modo reunión
       _expectReply();
@@ -2337,6 +3085,7 @@ class LiveController extends Notifier<LiveUiState> {
         case 'set_meeting_mode':
           meetingMode = call.args['enabled'] == true;
           _leaveMeetingRequested = false;
+          _meetingRequested = false;
         case 'set_microphone':
           micActive = call.args['active'] != false;
           _silenceRequested = false;
@@ -2364,12 +3113,21 @@ class LiveController extends Notifier<LiveUiState> {
           );
         case 'add_note':
           _noteCalled = true;
-          // "Anota que la rampa está bloqueada" (HU-024).
-          waits.add(
-            _addFieldNote(
-              (call.args['text'] ?? '').toString(),
-            ).then((r) => results[call.id] = r),
-          );
+          _noteTextExpected = false;
+          final text = (call.args['text'] ?? '').toString();
+          final saved = _appSavedNote;
+          if (saved != null &&
+              ref.read(liveClockProvider)().difference(saved.at) <=
+                  noteRepeatWindow &&
+              sameNote(saved.text, text)) {
+            _log('[Lazarus] nota ya guardada por la app: no se repite');
+            results[call.id] =
+                'ok: the note was already saved. Reply ONLY with one word '
+                'confirming it was written down.';
+          } else {
+            // "Anota que la rampa está bloqueada" (HU-024).
+            waits.add(_addFieldNote(text).then((r) => results[call.id] = r));
+          }
         case 'get_unicentro_route':
           results[call.id] = _describeRouteAForAssistant();
         case 'set_route_disturbance':
@@ -2378,6 +3136,17 @@ class LiveController extends Notifier<LiveUiState> {
               call.args['active'] == true,
             ).then((r) => results[call.id] = r),
           );
+        case 'start_route':
+          results[call.id] = _startRoute(
+            (call.args['destination'] ?? '').toString(),
+          );
+        case 'stop_route':
+          final had = _routeGuide != null || _pendingRouteDestination != null;
+          _stopRouteGuide();
+          if (had) _log('[Lazarus] ruta: detenida a pedido de la persona');
+          results[call.id] = had
+              ? 'ok: route guidance stopped. Confirm it in one short sentence.'
+              : 'ok: there was no active route.';
         case 'get_time':
           final time = describeLocalTime(ref.read(liveClockProvider)());
           _log('[Lazarus] hora para el asistente: $time');
@@ -2392,6 +3161,8 @@ class LiveController extends Notifier<LiveUiState> {
                 .then((r) => results[call.id] = r),
           );
         case 'trigger_sos':
+          _sosCalled = true;
+          _sosQuestionHeard = false;
           // La pregunta de confirmación y el resultado deben sonar siempre.
           _allowTurn('alerta SOS');
           waits.add(
@@ -2400,13 +3171,12 @@ class LiveController extends Notifier<LiveUiState> {
               results[call.id] = r;
               if (ref.read(sosControllerProvider) ==
                   SosStatus.awaitingConfirmation) {
-                _whenAssistantFinishes(
-                  () => sos.startCountdown(_onSosAutoSent),
-                );
+                _whenAssistantFinishes(_startSosCountdown);
               }
             }),
           );
         case 'cancel_sos':
+          _sosCalled = true;
           results[call.id] = sos.cancel();
         case 'call_phone':
           final to = call.args['to'] == 'emergency'

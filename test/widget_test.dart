@@ -1,4 +1,4 @@
-// Smoke test del arranque: la pantalla inicial muestra "Toca para empezar".
+// Smoke test del arranque: la pantalla inicial muestra "Iniciar asistente".
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -20,6 +20,6 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('Toca para empezar'), findsOneWidget);
+    expect(find.text('Iniciar asistente'), findsOneWidget);
   });
 }

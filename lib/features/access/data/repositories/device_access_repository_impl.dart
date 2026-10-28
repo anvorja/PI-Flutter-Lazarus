@@ -11,21 +11,29 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../../core/config/app_config.dart';
 import '../../../../core/debug/field_evidence.dart';
+import '../../../../core/debug/live_debug.dart';
 import '../../domain/repositories/device_access_repository.dart';
 import 'log_chunks.dart';
 
 const String deviceTokenKey = 'device_token';
 const String _offsetPrefix = 'log_upload_offset_';
+const String routeProfilesKey = 'route_profiles';
 const _timeout = Duration(seconds: 6);
 
 class DeviceAccessRepositoryImpl implements DeviceAccessRepository {
   DeviceAccessRepositoryImpl(
     this._prefs, [
     this._channel = const MethodChannel('lazarus/session'),
+    this._baseUrl = backendUrl,
   ]);
 
   final SharedPreferences _prefs;
   final MethodChannel _channel;
+  final String _baseUrl;
+
+  /// Registro en curso: la sesión y el aviso de "pendiente" pueden pedirlo a
+  /// la vez, y dos registros dejarían dos filas en el panel.
+  Future<String?>? _registering;
 
   @override
   String? get savedToken => _prefs.getString(deviceTokenKey);
@@ -34,6 +42,25 @@ class DeviceAccessRepositoryImpl implements DeviceAccessRepository {
   Future<String?> token() async {
     final saved = _prefs.getString(deviceTokenKey);
     if (saved != null && saved.isNotEmpty) return saved;
+    return _registering ??= _register().whenComplete(() => _registering = null);
+  }
+
+  @override
+  Future<void> registerAgainIfUnknown() async {
+    final saved = _prefs.getString(deviceTokenKey);
+    if (saved != null) {
+      try {
+        await _send('GET', '/api/v1/devices/me', token: saved);
+        return; // el panel lo conoce: de verdad espera la aprobación
+      } on Object catch (e) {
+        // Sin red no se sabe: se deja como está.
+        if (!await _forgetIfUnknown(e)) return;
+      }
+    }
+    await token();
+  }
+
+  Future<String?> _register() async {
     try {
       final info = await _deviceInfo();
       final body = await _send('POST', '/api/v1/devices/register', json: info);
@@ -54,7 +81,8 @@ class DeviceAccessRepositoryImpl implements DeviceAccessRepository {
       final body = await _send('GET', '/api/v1/devices/me', token: token);
       return (jsonDecode(body!) as Map<String, dynamic>)['upload_requested'] ==
           true;
-    } on Object {
+    } on Object catch (e) {
+      await _forgetIfUnknown(e);
       return false;
     }
   }
@@ -62,7 +90,11 @@ class DeviceAccessRepositoryImpl implements DeviceAccessRepository {
   @override
   Future<int> uploadLogs() async {
     final token = _prefs.getString(deviceTokenKey);
-    if (token == null || !kFieldEvidence) return 0;
+    if (!kFieldEvidence) return 0;
+    if (token == null) {
+      liveLog('[Lazarus] logs: el teléfono no está registrado, no se suben');
+      return 0;
+    }
     try {
       final dir = await evidenceDirectory();
       final offsets = {
@@ -76,9 +108,46 @@ class DeviceAccessRepositoryImpl implements DeviceAccessRepository {
         await _prefs.setInt('$_offsetPrefix${chunk.name}', chunk.endOffset);
       }
       return chunks.length;
-    } on Object {
+    } on Object catch (e) {
+      // Sin la URL ni el token: solo el tipo de fallo (prueba del 21-oct: las
+      // subidas no quedaban en el registro y no se sabía por qué).
+      final why = e is HttpException ? e.message : e.runtimeType.toString();
+      liveLog('[Lazarus] logs: no se subieron ($why); se reintenta después');
+      await _forgetIfUnknown(e);
       return 0; // se reintenta en la próxima: los offsets no avanzaron
     }
+  }
+
+  @override
+  Future<String?> routeProfiles() async {
+    final cached = _prefs.getString(routeProfilesKey);
+    final token = _prefs.getString(deviceTokenKey);
+    if (token == null) return cached;
+    try {
+      final body = await _send(
+        'GET',
+        '/api/v1/devices/me/routes',
+        token: token,
+      );
+      if (body == null) return cached;
+      await _prefs.setString(routeProfilesKey, body);
+      return body;
+    } on Object catch (e) {
+      // Sin datos en la calle: sirven los que se bajaron antes.
+      await _forgetIfUnknown(e);
+      return cached;
+    }
+  }
+
+  /// El backend ya no conoce el token (prueba del 21-oct: HTTP 401 al subir,
+  /// p. ej. porque el teléfono se eliminó en el panel). Se olvida, y la próxima
+  /// sesión registra el teléfono de nuevo, pendiente de aprobación. `true` si
+  /// lo olvidó.
+  Future<bool> _forgetIfUnknown(Object error) async {
+    if (error is! HttpException || error.message != 'HTTP 401') return false;
+    await _prefs.remove(deviceTokenKey);
+    liveLog('[Lazarus] el panel no conoce este teléfono: se registra de nuevo');
+    return true;
   }
 
   Future<Map<String, String>> _deviceInfo() async {
@@ -104,7 +173,7 @@ class DeviceAccessRepositoryImpl implements DeviceAccessRepository {
   }) async {
     final http = HttpClient()..connectionTimeout = _timeout;
     try {
-      final request = await http.openUrl(method, Uri.parse('$backendUrl$path'));
+      final request = await http.openUrl(method, Uri.parse('$_baseUrl$path'));
       if (token != null) request.headers.set('X-Device-Token', token);
       if (json != null) {
         request.headers.contentType = ContentType.json;
@@ -139,7 +208,7 @@ class DeviceAccessRepositoryImpl implements DeviceAccessRepository {
     final http = HttpClient()..connectionTimeout = _timeout;
     try {
       final request = await http.postUrl(
-        Uri.parse('$backendUrl/api/v1/devices/me/logs'),
+        Uri.parse('$_baseUrl/api/v1/devices/me/logs'),
       );
       request.headers
         ..set('X-Device-Token', token)

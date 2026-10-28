@@ -6,6 +6,7 @@ library;
 import 'package:app/features/emergency/domain/entities/emergency_contact.dart';
 import 'package:app/features/emergency/domain/repositories/emergency_repository.dart';
 import 'package:app/features/emergency/presentation/providers/emergency_providers.dart';
+import 'package:app/features/live/domain/entities/live_message.dart';
 import 'package:app/features/live/presentation/controllers/live_controller.dart';
 import 'package:app/features/live/presentation/providers/live_providers.dart';
 import 'package:app/features/location/presentation/providers/location_providers.dart';
@@ -285,6 +286,80 @@ void main() {
       live().disconnect();
       await wait(window * 2);
       expect(emergency.sms, isEmpty);
+    });
+  });
+
+  group('SOS por voz aunque el asistente no llame a la función', () {
+    void emit(LiveResponseType type, [Object? data]) =>
+        session.emitResponse(LiveResponse(type: type, data: data));
+    Future<void> heard(String text) async {
+      emit(
+        LiveResponseType.inputTranscription,
+        LiveTranscription(text: text, finished: false),
+      );
+      await settle();
+    }
+
+    test(
+      'dijo "S o s" y el turno terminó sin la alerta: la app pregunta como '
+      'con el gesto y, sin respuesta, la envía (prueba del 21-oct)',
+      () async {
+        await build();
+        await startSession();
+        await heard(' S o s');
+        emit(LiveResponseType.turnComplete);
+        await settle();
+
+        expect(state().status, LiveStatus.sos);
+        expect(
+          spoken.last,
+          text(LiveNotice.sosGestureConfirm, name: contacto.name),
+        );
+        await wait(window * 2);
+        expect(emergency.sms.single.phone, contacto.phone);
+      },
+    );
+
+    test(
+      'si el asistente llamó a la alerta, la app no hace nada más',
+      () async {
+        await build();
+        await startSession();
+        await heard('SOS');
+        emit(
+          LiveResponseType.toolCall,
+          LiveToolCall(
+            functionCalls: [
+              LiveFunctionCall(id: 'sos', name: 'trigger_sos', args: {}),
+            ],
+          ),
+        );
+        await settle();
+        emit(LiveResponseType.turnComplete);
+        await settle();
+        expect(state().status, isNot(LiveStatus.sos));
+      },
+    );
+
+    test('una pregunta sobre el SOS no es un pedido', () async {
+      await build();
+      await startSession();
+      await heard('¿Qué hace el SOS?');
+      emit(LiveResponseType.turnComplete);
+      await settle();
+      expect(state().status, LiveStatus.connected);
+      expect(emergency.sms, isEmpty);
+    });
+
+    test('reconoce el pedido', () {
+      expect(asksSos(' S o s'), isTrue);
+      expect(asksSos('SOS.'), isTrue);
+      expect(asksSos('Ese o ese'), isTrue);
+      expect(asksSos('Aria, SOS, ayuda', name: 'Aria'), isTrue);
+      expect(asksSos('¿Qué hace el SOS?'), isFalse);
+      expect(asksSos('Lee el letrero de SOS de la pared'), isFalse);
+      expect(asksSos('Es o sea lo mismo'), isFalse);
+      expect(asksSos('Los osos'), isFalse);
     });
   });
 }

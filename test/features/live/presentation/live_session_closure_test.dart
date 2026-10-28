@@ -1,11 +1,14 @@
 // HU-002: qué hace la app según la causa por la que terminó la sesión.
 
+import 'dart:async';
+
 import 'package:app/features/access/presentation/providers/access_providers.dart';
 import 'package:app/features/live/domain/entities/live_close.dart';
 import 'package:app/features/live/domain/entities/live_message.dart';
 import 'package:app/features/live/presentation/controllers/live_controller.dart';
 import 'package:app/features/live/presentation/providers/live_providers.dart';
 import 'package:app/features/location/presentation/providers/location_providers.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -14,22 +17,26 @@ import '../../../support/fakes.dart';
 
 void main() {
   late FakeLiveSessionRepository session;
+  late FakeMediaRepository media;
   late List<String> announcements;
   late ProviderContainer container;
   late FakeDeviceAccess deviceAccess;
+  late DateTime now;
 
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();
     session = FakeLiveSessionRepository();
+    media = FakeMediaRepository();
     announcements = [];
     deviceAccess = FakeDeviceAccess();
+    now = DateTime(2026, 10, 24, 10);
     container = ProviderContainer(
       overrides: [
         sharedPreferencesProvider.overrideWithValue(prefs),
         liveSessionRepositoryProvider.overrideWithValue(session),
         networkStatusRepositoryProvider.overrideWithValue(FakeNetworkStatus()),
-        mediaRepositoryProvider.overrideWithValue(FakeMediaRepository()),
+        mediaRepositoryProvider.overrideWithValue(media),
         backgroundSessionRepositoryProvider.overrideWithValue(
           FakeBackgroundSession(),
         ),
@@ -40,6 +47,7 @@ void main() {
         announcerStopProvider.overrideWithValue(() {}),
         retryDelayProvider.overrideWithValue((_) => Duration.zero),
         deviceAccessRepositoryProvider.overrideWithValue(deviceAccess),
+        liveClockProvider.overrideWithValue(() => now),
       ],
     );
     addTearDown(container.dispose);
@@ -187,6 +195,21 @@ void main() {
       });
     }
 
+    test('pendiente: revisa si el panel aún conoce el teléfono, sin esperar '
+        'a Detener (27-oct)', () async {
+      await openSession();
+      session.emitClose(LiveCloseCause.devicePending);
+      await settle();
+      expect(deviceAccess.registerAgainChecks, 1);
+    });
+
+    test('deshabilitado: no se registra de nuevo', () async {
+      await openSession();
+      session.emitClose(LiveCloseCause.deviceDisabled);
+      await settle();
+      expect(deviceAccess.registerAgainChecks, 0);
+    });
+
     test('cerrada desde el panel pero sin código (Render): pregunta la causa '
         'con su token, lo dice, no reintenta y sube los logs', () async {
       await openSession();
@@ -206,6 +229,26 @@ void main() {
       controller().disconnect();
       await settle();
       expect(deviceAccess.uploads, 1);
+    });
+
+    test('con la red lenta, las subidas van de a una y no repiten lo mismo '
+        '(jornada del 24-oct)', () async {
+      deviceAccess.slowNetwork = Completer<void>();
+      await openSession();
+      controller().disconnect();
+      await settle();
+      controller().onTap();
+      await settle();
+      session.emitSetupComplete();
+      await settle();
+      controller().disconnect();
+      await settle();
+      expect(deviceAccess.uploads, 1); // la segunda espera a la primera
+      deviceAccess.slowNetwork!.complete();
+      await settle();
+      await settle();
+      expect(deviceAccess.uploads, 2);
+      expect(deviceAccess.maxUploadsInFlight, 1);
     });
 
     test('si el panel pidió los logs, los sube al empezar la sesión', () async {
@@ -282,5 +325,129 @@ void main() {
       noticeText(LiveNotice.retrying, 'de'),
       noticeText(LiveNotice.retrying, 'es'),
     );
+  });
+
+  group('Detener con confirmación (jornadas del 24 y el 26-oct)', () {
+    ValueNotifier<bool> phoneVoice() =>
+        container.read(announcerSpeakingProvider);
+
+    /// El teléfono dice la pregunta durante [seconds] y termina.
+    void questionLasts(double seconds) {
+      phoneVoice().value = true;
+      now = now.add(Duration(milliseconds: (seconds * 1000).round()));
+      phoneVoice().value = false;
+    }
+
+    test('el segundo toque mientras suena la pregunta detiene', () async {
+      await openSession();
+      controller().requestStop();
+      expect(announcements, [notice(LiveNotice.stopConfirm)]);
+      expect(state().isLive, isTrue);
+      phoneVoice().value = true;
+      now = now.add(const Duration(seconds: 2));
+      controller().requestStop();
+      expect(state().isLive, isFalse);
+      expect(announcements.last, notice(LiveNotice.stopped));
+    });
+
+    test('26-oct: la pregunta tardó 6,8 s en terminar y el toque 1,4 s '
+        'después detiene sin repetirla', () async {
+      await openSession();
+      controller().requestStop();
+      questionLasts(6.8);
+      now = now.add(const Duration(milliseconds: 1400));
+      controller().requestStop();
+      expect(state().isLive, isFalse);
+      expect(
+        announcements.where((a) => a == notice(LiveNotice.stopConfirm)),
+        hasLength(1),
+      );
+    });
+
+    test(
+      'pasados 4 s desde que terminó la pregunta, vuelve a preguntar',
+      () async {
+        await openSession();
+        controller().requestStop();
+        questionLasts(3.5);
+        now = now.add(const Duration(seconds: 5));
+        controller().requestStop();
+        expect(state().isLive, isTrue);
+        expect(announcements, [
+          notice(LiveNotice.stopConfirm),
+          notice(LiveNotice.stopConfirm),
+        ]);
+      },
+    );
+
+    test(
+      'sin aviso de fin de la pregunta, cuenta 8 s desde el primer toque',
+      () async {
+        await openSession();
+        controller().requestStop();
+        now = now.add(const Duration(seconds: 6));
+        controller().requestStop();
+        expect(state().isLive, isFalse);
+      },
+    );
+
+    test('sin aviso de fin, pasados 8 s vuelve a preguntar', () async {
+      await openSession();
+      controller().requestStop();
+      now = now.add(const Duration(seconds: 9));
+      controller().requestStop();
+      expect(state().isLive, isTrue);
+      expect(announcements, [
+        notice(LiveNotice.stopConfirm),
+        notice(LiveNotice.stopConfirm),
+      ]);
+    });
+
+    test('mientras se confirma, el asistente calla: se corta lo que decía y '
+        'no suena lo que llega', () async {
+      await openSession();
+      session.emitResponse(
+        const LiveResponse(type: LiveResponseType.audio, data: 'AAAA'),
+      );
+      await settle();
+      expect(media.played, hasLength(1));
+
+      controller().requestStop();
+      expect(media.interruptions, 1);
+      phoneVoice().value = true;
+      session.emitResponse(
+        const LiveResponse(type: LiveResponseType.audio, data: 'BBBB'),
+      );
+      await settle();
+      expect(media.played, hasLength(1), reason: 'no habla encima');
+
+      // Sin confirmar: pasado el plazo, el asistente vuelve a sonar.
+      phoneVoice().value = false;
+      now = now.add(const Duration(seconds: 5));
+      session.emitResponse(
+        const LiveResponse(type: LiveResponseType.audio, data: 'CCCC'),
+      );
+      await settle();
+      expect(media.played, hasLength(2));
+      expect(state().isLive, isTrue);
+    });
+
+    test('un toque de más justo después de Detener no abre otra sesión; '
+        'pasado 1,5 s, el toque sí inicia', () async {
+      await openSession();
+      controller().requestStop();
+      controller().requestStop();
+      expect(state().isLive, isFalse);
+
+      now = now.add(const Duration(milliseconds: 400));
+      controller().onTap();
+      await settle();
+      expect(session.connectCalls, 1);
+
+      now = now.add(const Duration(seconds: 2));
+      controller().onTap();
+      await settle();
+      expect(session.connectCalls, 2);
+    });
   });
 }

@@ -54,7 +54,7 @@ void main() {
   test('estado inicial: inactivo', () async {
     container = await build();
     expect(state().status, LiveStatus.idle);
-    expect(state().statusLabel, 'Toca para empezar');
+    expect(state().statusLabel, 'Iniciar asistente');
   });
 
   test(

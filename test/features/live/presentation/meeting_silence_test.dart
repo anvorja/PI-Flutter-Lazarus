@@ -241,6 +241,107 @@ void main() {
     expect(asksLeaveMeeting('Aria, já pode falar'), isTrue);
     expect(asksLeaveMeeting('Aria, puoi parlare'), isTrue);
     expect(asksLeaveMeeting('Aria, ¿qué se dijo?'), isFalse);
+    // Prueba del 21-oct.
+    expect(
+      asksLeaveMeeting('Vuelve a hablar, el modo reunión se acabó.'),
+      isTrue,
+    );
+  });
+
+  group('entrar en modo reunión aunque el asistente no llame a la función', () {
+    test('la app lo activa al terminar el turno y lo confirma con la voz '
+        'del teléfono (prueba del 21-oct)', () async {
+      await heard(' Si');
+      await heard('len');
+      await heard('cio, voy a estar en una reunión.');
+      emit(LiveResponseType.turnComplete);
+      await settle();
+
+      expect(state().meetingMode, isTrue);
+      expect(announced, [noticeText(LiveNotice.meetingOn, 'es')]);
+      expect(
+        logs,
+        contains(
+          '[Lazarus] modo reunión activado por la app (el asistente no llamó a set_meeting_mode)',
+        ),
+      );
+      // Desde ahí, lo que no lo llama por su nombre no suena.
+      await heard('El asunto es firmar el tratado.');
+      await assistantSays('respuesta-no-pedida');
+      expect(media.played, isEmpty);
+    });
+
+    test(
+      'si respondió hablando, lo confirma cuando termina su audio',
+      () async {
+        await heard('Voy a estar en una reunión.');
+        await assistantSays('vale');
+        emit(LiveResponseType.turnComplete);
+        await settle();
+        expect(state().meetingMode, isTrue);
+        expect(announced, isEmpty, reason: 'no tapa al asistente');
+        media.onDrained!();
+        await settle();
+        expect(announced, [noticeText(LiveNotice.meetingOn, 'es')]);
+      },
+    );
+
+    test('si llamó a la función, la app no hace nada más', () async {
+      await heard('Voy a estar en una reunión.');
+      await toolCall('set_meeting_mode', {'enabled': true});
+      emit(LiveResponseType.turnComplete);
+      await settle();
+      expect(state().meetingMode, isTrue);
+      expect(logs.where((l) => l.contains('activado por la app')), isEmpty);
+      expect(announced, hasLength(1));
+    });
+
+    test('reconoce la frase, pero no cuando pide salir', () {
+      expect(asksMeetingMode('Silencio, voy a estar en una reunión.'), isTrue);
+      expect(asksMeetingMode('Activa el modo reunión'), isTrue);
+      expect(
+        asksMeetingMode('Silencio, voy a estar en modo de reunión.'),
+        isTrue,
+      );
+      expect(asksMeetingMode('Meeting mode, please'), isTrue);
+      expect(asksMeetingMode('Modo reunião'), isTrue);
+      expect(asksMeetingMode('El modo reunión se acabó'), isFalse);
+      expect(asksMeetingMode('Aria, sal del modo reunión'), isFalse);
+      expect(asksMeetingMode('¿Qué hora es?'), isFalse);
+    });
+  });
+
+  group('avisos del teléfono (prueba del 21-oct)', () {
+    test('mientras suena un aviso, el micrófono no se envía: el asistente lo '
+        'oiría como si lo dijera la persona', () async {
+      final speaking = container.read(announcerSpeakingProvider);
+      final before = session.sentAudio.length;
+
+      speaking.value = true;
+      media.onMicChunk!('aviso');
+      expect(session.sentAudio, hasLength(before));
+      expect(
+        logs,
+        contains('[Lazarus] mic: en pausa mientras habla el teléfono'),
+      );
+
+      speaking.value = false;
+      media.onMicChunk!('persona');
+      expect(session.sentAudio.last, 'persona');
+    });
+
+    test('con audífonos no hace falta pausarlo', () async {
+      media.headset = true;
+      controller().disconnect();
+      controller().onTap();
+      await settle();
+      session.emitSetupComplete();
+      await settle();
+
+      container.read(announcerSpeakingProvider).value = true;
+      media.onMicChunk!('persona');
+      expect(session.sentAudio.last, 'persona');
+    });
   });
 
   group('reconocer el nombre en la transcripción', () {
@@ -447,7 +548,7 @@ void main() {
       () async {
         controller().disconnect();
         expect(state().micMuted, isFalse);
-        expect(state().statusLabel, 'Toca para empezar');
+        expect(state().statusLabel, 'Iniciar asistente');
 
         controller().onTap();
         await settle();

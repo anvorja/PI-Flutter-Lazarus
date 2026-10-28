@@ -4,6 +4,7 @@
 /// leen/observan estos providers.
 library;
 
+import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flutter/semantics.dart';
@@ -158,10 +159,54 @@ final screenReaderAnnouncerProvider = Provider<void Function(String message)>((
   };
 });
 
+/// `true` mientras suena un aviso con la voz del teléfono. En altavoz, el
+/// micrófono no se envía mientras tanto: el asistente lo oiría como si lo
+/// dijera la persona (prueba del 21-oct con el aviso del modo reunión).
+final announcerSpeakingProvider = Provider<ValueNotifier<bool>>((ref) {
+  final speaking = ValueNotifier(false);
+  ref.onDispose(speaking.dispose);
+  return speaking;
+});
+
+/// Eco que queda en la sala después del aviso.
+const Duration announcerSpeechTail = Duration(milliseconds: 300);
+
+/// Tope de la pausa del micrófono por un aviso: si Android no avisa el final
+/// (el motor de voz puede morir a mitad), el micrófono se reabre igual.
+const Duration announcerSpeechMax = Duration(seconds: 30);
+
 /// Síntesis de voz del teléfono, compartida por el aviso y su corte.
 final _systemTtsProvider = Provider<FlutterTts>((ref) {
   final tts = FlutterTts();
-  ref.onDispose(tts.stop);
+  final speaking = ref.watch(announcerSpeakingProvider);
+  Timer? tail;
+  Timer? max;
+  var disposed = false;
+  void set(bool value) {
+    if (!disposed) speaking.value = value;
+  }
+
+  void done() {
+    max?.cancel();
+    tail?.cancel();
+    tail = Timer(announcerSpeechTail, () => set(false));
+  }
+
+  tts.setStartHandler(() {
+    tail?.cancel();
+    max?.cancel();
+    max = Timer(announcerSpeechMax, () => set(false));
+    set(true);
+  });
+  tts.setCompletionHandler(done);
+  tts.setCancelHandler(done);
+  tts.setErrorHandler((_) => done());
+  ref.onDispose(() {
+    disposed = true;
+    tail?.cancel();
+    max?.cancel();
+    tts.stop();
+  });
   return tts;
 });
 
@@ -216,6 +261,14 @@ final observeReplyWaitProvider = Provider<Duration>(
   (ref) => const Duration(seconds: 12),
 );
 
+/// Con TalkBack, cuánto se espera tras su última lectura antes de volver a
+/// observar: la persona está explorando la pantalla y la voz del asistente se
+/// cruzaba con la de TalkBack (prueba del 27-oct: describía cada 6 s mientras
+/// la persona buscaba el botón Detener).
+final screenReaderObserveQuietProvider = Provider<Duration>(
+  (ref) => const Duration(seconds: 10),
+);
+
 /// Pausa tras una respuesta a la persona antes de volver a observar: suele
 /// seguir hablando (en la prueba, preguntas seguidas por la licuadora).
 final observeAfterReplyProvider = Provider<Duration>(
@@ -225,6 +278,15 @@ final observeAfterReplyProvider = Provider<Duration>(
 /// Si tras un `[OBSERVA]` el asistente no responde en este tiempo, calló.
 final observeTimeoutProvider = Provider<Duration>(
   (ref) => const Duration(seconds: 8),
+);
+
+/// Espera con la app oculta antes de pasar a la sesión sin cámara (HU-017). La
+/// cámara se pausa enseguida; la sesión cambia solo si la app sigue oculta: un
+/// diálogo del sistema, la cortina de notificaciones o una captura de
+/// Accessibility Scanner tapan la app un instante, y el 27-oct cada uno costaba
+/// dos reconexiones y cortaba el saludo.
+final cameraLockDelayProvider = Provider<Duration>(
+  (ref) => const Duration(seconds: 2),
 );
 
 /// Espera tras desbloquear la pantalla antes de volver a la sesión con cámara

@@ -144,6 +144,11 @@ class FakeLiveSessionRepository implements LiveSessionRepository {
   @override
   void sendRouteNotice(String notice) => routeNotices.add(notice);
 
+  final List<String> routeGuides = [];
+
+  @override
+  void sendRouteGuide(String message) => routeGuides.add(message);
+
   /// Primeros mensajes de sesión sin cámara (`false`) y con cámara de vuelta
   /// (`true`), en orden.
   final List<bool> cameraNotices = [];
@@ -412,6 +417,12 @@ class FakeBackgroundSession implements BackgroundSessionRepository {
     exempt = grantExemption;
     return exempt;
   }
+
+  /// Último cierre del proceso que informa Android (null: sin historial).
+  ProcessExit? exit;
+
+  @override
+  Future<ProcessExit?> lastExit() async => exit;
 }
 
 /// Red de datos simulada (HU-042): [setOnline] emite el cambio como el sistema.
@@ -450,12 +461,34 @@ class FakeDeviceAccess implements DeviceAccessRepository {
   @override
   Future<String?> token() async => deviceToken;
 
+  int registerAgainChecks = 0;
+
+  @override
+  Future<void> registerAgainIfUnknown() async => registerAgainChecks++;
+
   @override
   Future<bool> uploadRequested() async => requested;
+
+  /// Si no es `null`, cada subida espera a que se complete (red lenta).
+  Completer<void>? slowNetwork;
+  int uploadsInFlight = 0;
+  int maxUploadsInFlight = 0;
 
   @override
   Future<int> uploadLogs() async {
     uploads++;
+    uploadsInFlight++;
+    if (uploadsInFlight > maxUploadsInFlight) {
+      maxUploadsInFlight = uploadsInFlight;
+    }
+    await slowNetwork?.future;
+    uploadsInFlight--;
     return 1;
   }
+
+  /// Perfiles de ruta en JSON (HU-022).
+  String? routes;
+
+  @override
+  Future<String?> routeProfiles() async => routes;
 }

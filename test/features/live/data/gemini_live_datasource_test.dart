@@ -97,4 +97,44 @@ void main() {
     );
     expect(start.containsKey('screenLocked'), isFalse);
   });
+
+  test(
+    'el frame start lleva el operador y el tipo de red (capacidad)',
+    () async {
+      final start = await startFrame(
+        (url) => GeminiLiveClientOptions(
+          url: url,
+          language: 'es',
+          networkInfo: () async => {
+            'operator': 'Claro',
+            'transport': 'cellular',
+          },
+        ),
+      );
+      expect(start['network'], {'operator': 'Claro', 'transport': 'cellular'});
+    },
+  );
+
+  test('sin datos de red el frame start no lleva network', () async {
+    final start = await startFrame(
+      (url) => GeminiLiveClientOptions(
+        url: url,
+        language: 'es',
+        networkInfo: () async => null,
+      ),
+    );
+    expect(start.containsKey('network'), isFalse);
+  });
+
+  test('si leer la red falla, la sesión abre igual sin ella', () async {
+    final start = await startFrame(
+      (url) => GeminiLiveClientOptions(
+        url: url,
+        language: 'es',
+        networkInfo: () async => throw StateError('sin telefonía'),
+      ),
+    );
+    expect(start['type'], 'start');
+    expect(start.containsKey('network'), isFalse);
+  });
 }
