@@ -3,15 +3,18 @@
 /// El backend expone el proxy `/ws/live`: la API key de Gemini vive solo en el
 /// servidor (ver ADR-0003). Por ahora apunta a
 /// desarrollo local; se puede sobreescribir en tiempo de compilación con:
+///   flutter run --dart-define-from-file=.env   (ver .env.example)
 ///   flutter run --dart-define=BACKEND_URL=http://192.168.x.x:8000
 library;
 
+const String _backendUrlDefine = String.fromEnvironment('BACKEND_URL');
+
 /// URL base del backend (HTTP). En un emulador Android, `localhost` del host es
-/// `10.0.2.2`; en un teléfono físico usa la IP de tu máquina en la LAN.
-const String backendUrl = String.fromEnvironment(
-  'BACKEND_URL',
-  defaultValue: 'http://localhost:8000',
-);
+/// `10.0.2.2`; en un teléfono físico usa la IP de tu máquina en la LAN. Una
+/// línea `BACKEND_URL=` vacía en el `.env` cuenta como no definida.
+const String backendUrl = _backendUrlDefine == ''
+    ? 'http://localhost:8000'
+    : _backendUrlDefine;
 
 /// URL del WebSocket del proxy Live, derivada de [backendUrl].
 String get liveWsUrl =>
