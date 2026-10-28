@@ -60,10 +60,14 @@ jobs:
         run: |
           if [ -z "$BACKEND_URL" ]; then echo "::error::Falta el secreto BACKEND_URL"; exit 1; fi
           # El número de compilación sube en cada ejecución: la versión nueva se
-          # instala encima de la anterior sin desinstalar.
+          # instala encima de la anterior sin desinstalar. Se suma 100 para quedar
+          # por encima de las compilaciones locales del piloto (hasta la +22);
+          # Android no instala un número menor encima de uno mayor.
           # FIELD_EVIDENCE: las versiones del piloto guardan el registro, el
           # recorrido y las fotos recientes para la evidencia de las pruebas.
-          flutter build apk --release --build-number=${{ github.run_number }} \
+          BUILD_NUMBER=$((100 + ${{ github.run_number }}))
+          echo "Compilación $BUILD_NUMBER"
+          flutter build apk --release --build-number=$BUILD_NUMBER \
             --dart-define=BACKEND_URL="$BACKEND_URL" --dart-define=FIELD_EVIDENCE=true
 
       - name: Verificar que no salió firmado con la clave de debug
@@ -83,7 +87,7 @@ jobs:
           fi
           echo "$FIREBASE_SERVICE_ACCOUNT" > "$RUNNER_TEMP/firebase.json"
           export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/firebase.json"
-          NOTAS="$RAMA (compilación ${{ github.run_number }}): $(git log -1 --pretty=%s)"
+          NOTAS="$RAMA (compilación $((100 + ${{ github.run_number }}))): $(git log -1 --pretty=%s)"
           npx --yes firebase-tools@15.32.1 appdistribution:distribute \
             build/app/outputs/flutter-apk/app-release.apk \
             --app "$FIREBASE_APP_ID" --groups piloto --release-notes "$NOTAS"
