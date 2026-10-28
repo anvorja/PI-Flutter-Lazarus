@@ -35,6 +35,7 @@ void main() {
   Future<void> build({
     Map<String, Object> prefs = const {},
     bool cameraGranted = true,
+    Duration lockDelay = Duration.zero,
   }) async {
     SharedPreferences.setMockInitialValues(prefs);
     final p = await SharedPreferences.getInstance();
@@ -73,6 +74,7 @@ void main() {
         cameraUnlockDelayProvider.overrideWithValue(
           const Duration(milliseconds: 300),
         ),
+        cameraLockDelayProvider.overrideWithValue(lockDelay),
       ],
     );
     addTearDown(container.dispose);
@@ -353,6 +355,32 @@ void main() {
       expect(session.connectCalls, 2);
       expect(session.lastScreenLocked, isTrue);
       expect(media.cameraStarted, isFalse);
+    });
+
+    test('la app oculta un instante (un diálogo, una captura del scanner) no '
+        'cambia de sesión: la cámara se pausa y vuelve (27-oct)', () async {
+      await build(lockDelay: const Duration(milliseconds: 300));
+      await startSession();
+      controller().onVisibilityChanged(false);
+      await settle();
+      expect(media.cameraStarted, isFalse, reason: 'la cámara se pausa ya');
+      await wait(100);
+      controller().onVisibilityChanged(true);
+      await wait(500);
+      expect(session.connectCalls, 1);
+      expect(media.cameraStarted, isTrue);
+    });
+
+    test('si la app sigue oculta pasada la espera, sí cambia a la sesión sin '
+        'imágenes', () async {
+      await build(lockDelay: const Duration(milliseconds: 300));
+      await startSession();
+      controller().onVisibilityChanged(false);
+      await wait(100);
+      expect(session.connectCalls, 1);
+      await wait(300);
+      expect(session.connectCalls, 2);
+      expect(session.lastScreenLocked, isTrue);
     });
 
     test('si se desbloquea antes del cambio, sigue la misma sesión con la '

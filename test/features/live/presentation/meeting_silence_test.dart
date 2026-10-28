@@ -548,7 +548,7 @@ void main() {
       () async {
         controller().disconnect();
         expect(state().micMuted, isFalse);
-        expect(state().statusLabel, 'Toca para empezar');
+        expect(state().statusLabel, 'Iniciar asistente');
 
         controller().onTap();
         await settle();

@@ -161,6 +161,8 @@ void main() {
       });
       expect(r, startsWith('ok'));
       expect(r, contains('SMS permission was not granted'));
+      // Android bloquea el SMS de una app instalada desde un .apk (27-oct).
+      expect(r, contains('"Allow restricted settings"'));
     });
 
     test('un número inválido no se guarda y se lee por grupos lo que se '

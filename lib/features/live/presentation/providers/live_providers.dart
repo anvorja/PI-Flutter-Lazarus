@@ -280,6 +280,15 @@ final observeTimeoutProvider = Provider<Duration>(
   (ref) => const Duration(seconds: 8),
 );
 
+/// Espera con la app oculta antes de pasar a la sesión sin cámara (HU-017). La
+/// cámara se pausa enseguida; la sesión cambia solo si la app sigue oculta: un
+/// diálogo del sistema, la cortina de notificaciones o una captura de
+/// Accessibility Scanner tapan la app un instante, y el 27-oct cada uno costaba
+/// dos reconexiones y cortaba el saludo.
+final cameraLockDelayProvider = Provider<Duration>(
+  (ref) => const Duration(seconds: 2),
+);
+
 /// Espera tras desbloquear la pantalla antes de volver a la sesión con cámara
 /// (HU-017): un desbloqueo sin querer en el bolsillo no corta la conversación.
 final cameraUnlockDelayProvider = Provider<Duration>(
