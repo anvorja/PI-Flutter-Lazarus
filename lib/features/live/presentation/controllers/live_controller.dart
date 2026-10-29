@@ -2583,7 +2583,11 @@ class LiveController extends Notifier<LiveUiState> {
           'do not describe the route.';
     }
     final started = _beginRoute(destination, fix);
-    if (started == null) return _noRoute();
+    if (started == null) {
+      return isUnknownDestination(_routes, fix, destination)
+          ? _unknownDestination(destination, fix)
+          : _noRoute();
+    }
     _routeWatch = Timer.periodic(routeCheckInterval, (_) => checkRoute());
     return started;
   }
@@ -2603,6 +2607,22 @@ class LiveController extends Notifier<LiveUiState> {
         'repeat the test-route warning or the last instruction; tell the person '
         "in one short sentence that the guidance goes on. The app will keep "
         "sending '[RUTA]' at each point.";
+  }
+
+  /// LAZA-128 (hallazgo 46): el 28-oct el asistente entendió "Utrega" y la app
+  /// inició la ruta más cercana. Con un destino que no es el de ningún perfil
+  /// cercano no se inicia ninguna ruta: el asistente pregunta a cuál va.
+  String _unknownDestination(String destination, LocationFix fix) {
+    final options = destinationsNear(_routes, fix);
+    _log(
+      '[Lazarus] ruta: destino "$destination" sin perfil; no se inicia '
+      '(destinos cerca: ${options.join(', ')})',
+    );
+    return "unknown_destination: '$destination' is not the destination of any "
+        'curated route near here, so no route was started. Routes from here '
+        "go to: ${options.map((d) => "'$d'").join(', ')}. Ask the person in "
+        'one short sentence which of those they mean, and call start_route '
+        'again with it. Do not guide them yourself.';
   }
 
   String _noRoute() {
@@ -2733,6 +2753,11 @@ class LiveController extends Notifier<LiveUiState> {
     _pendingRouteDestination = null;
     _pendingRouteSince = null;
     final started = _beginRoute(destination, fix);
+    if (started == null && isUnknownDestination(_routes, fix, destination)) {
+      _stopRouteGuide();
+      _sendRoute('not started. ${_unknownDestination(destination, fix)}');
+      return;
+    }
     if (started == null) {
       _stopRouteGuide();
       _log('[Lazarus] ruta: GPS confiable, pero ningún perfil pasa cerca');
