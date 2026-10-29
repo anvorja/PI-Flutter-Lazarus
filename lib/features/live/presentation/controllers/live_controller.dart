@@ -1070,6 +1070,13 @@ class LiveController extends Notifier<LiveUiState> {
   String? _pendingRouteDestination;
   DateTime? _pendingRouteSince;
 
+  /// El último aviso de ruta, hasta que termina de sonar (LAZA-127). Si la
+  /// sesión cambia antes, se repite en la siguiente mientras siga vigente.
+  _RouteNotice? _routeNotice;
+
+  /// El cambio de sesión por la pantalla ya esperó a un aviso de ruta.
+  bool _switchWaitedForRoute = false;
+
   /// Ya se consultó si el panel pidió los logs en esta sesión (HU-045).
   bool _uploadChecked = false;
 
@@ -1520,6 +1527,7 @@ class LiveController extends Notifier<LiveUiState> {
   void _syncCameraSession() {
     _cameraSwitch?.cancel();
     _cameraSwitch = null;
+    _switchWaitedForRoute = false;
     if (!_cameraAllowed || !_sessionUp) return;
     final blind = !_visible;
     if (blind == _sessionBlind) {
@@ -1541,6 +1549,16 @@ class LiveController extends Notifier<LiveUiState> {
     if (!ref.mounted || !_sessionUp) return;
     final blind = !_visible;
     if (blind == _sessionBlind) return;
+    // LAZA-127: un aviso de ruta que todavía suena no se corta; el cambio
+    // espera a que termine, una sola vez (con el respaldo de tiempo de
+    // _whenAssistantFinishes). Si igual se corta, se repite en la sesión nueva.
+    if (_routeNotice != null && !_switchWaitedForRoute) {
+      _switchWaitedForRoute = true;
+      _log('[Lazarus] cambio de sesión en espera: suena un aviso de ruta');
+      _whenAssistantFinishes(_switchCameraSession);
+      return;
+    }
+    _switchWaitedForRoute = false;
     _log(
       blind
           ? '[Lazarus] pantalla bloqueada: sesión nueva sin imágenes'
@@ -2021,8 +2039,10 @@ class LiveController extends Notifier<LiveUiState> {
           const Duration(seconds: 30),
           (_) => checkRouteA(),
         );
-        final routeGoesOn =
-            _pendingKickoff != _PendingKickoff.intro && _routeGuide != null;
+        final resumed = _pendingKickoff != _PendingKickoff.intro;
+        final routeGoesOn = resumed && _routeGuide != null;
+        final repeat = resumed ? _routeNoticeToRepeat() : null;
+        if (!resumed) _routeNotice = null;
         switch (_pendingKickoff) {
           case _PendingKickoff.voice:
             _expectReply();
@@ -2044,8 +2064,13 @@ class LiveController extends Notifier<LiveUiState> {
             _session.sendKickoff();
         }
         _pendingKickoff = _PendingKickoff.intro;
-        // La sesión nueva del asistente no sabe que hay una ruta en curso.
-        if (routeGoesOn) _sendRouteGoesOn();
+        // La sesión nueva del asistente no sabe que hay una ruta en curso. El
+        // aviso cortado, si lo hay, ya lo dice.
+        if (repeat != null) {
+          _repeatRouteNotice(repeat);
+        } else if (routeGoesOn) {
+          _sendRouteGoesOn();
+        }
         _markActivity();
         _startMedia();
         // La pantalla cambió mientras se conectaba.
@@ -2666,6 +2691,7 @@ class LiveController extends Notifier<LiveUiState> {
     _routeGuide = null;
     _pendingRouteDestination = null;
     _pendingRouteSince = null;
+    _routeNotice = null;
   }
 
   /// Avanza la ruta activa con la última posición y, si llegó o se acerca a un
@@ -2723,12 +2749,63 @@ class LiveController extends Notifier<LiveUiState> {
     );
   }
 
-  void _sendRoute(String message) {
+  void _sendRoute(String message, {_RouteNotice? replayOf}) {
     _afterAssistantAudio(() {
       if (!ref.mounted || !_session.connected) return;
+      final guide = _routeGuide;
+      _routeNotice =
+          replayOf ??
+          _RouteNotice(
+            message: message,
+            at: ref.read(liveClockProvider)(),
+            slug: guide?.profile.slug,
+            next: guide?.nextIndex,
+          );
       _expectReply();
       _session.sendRouteGuide(message);
     });
+  }
+
+  /// LAZA-127 (hallazgo 45): el 28-oct la llegada se avisó a las 14:03:55 y un
+  /// segundo después el desbloqueo de la pantalla abrió una sesión nueva: el
+  /// "Has llegado" se cortó en la primera palabra y nadie lo repitió. El aviso
+  /// que no terminó de sonar se repite en la sesión nueva si sigue vigente: a
+  /// tiempo, en la misma ruta y el mismo punto, o, si era la llegada, sin otra
+  /// ruta empezada.
+  _RouteNotice? _routeNoticeToRepeat() {
+    final notice = _routeNotice;
+    _routeNotice = null;
+    if (notice == null) return null;
+    final age = ref.read(liveClockProvider)().difference(notice.at);
+    final guide = _routeGuide;
+    final String? stale;
+    if (age > routeNoticeRepeatWindow) {
+      stale = 'pasaron ${age.inSeconds} s';
+    } else if (notice.slug == null) {
+      stale = guide == null ? null : 'ya empezó otra ruta';
+    } else if (guide?.profile.slug != notice.slug) {
+      stale = 'la ruta cambió';
+    } else if (guide!.nextIndex != notice.next) {
+      stale = 'la guía ya avanzó';
+    } else {
+      stale = null;
+    }
+    if (stale != null) {
+      _log(
+        '[Lazarus] ruta: aviso cortado al cambiar de sesión, descartado ($stale)',
+      );
+      return null;
+    }
+    return notice;
+  }
+
+  void _repeatRouteNotice(_RouteNotice notice) {
+    _log('[Lazarus] ruta: se repite el aviso cortado al cambiar de sesión');
+    _sendRoute(
+      'repeat: the session changed while you were saying this, so it was '
+      'cut. Say it again now, briefly. ${notice.message}',
+      replayOf: notice,
+    );
   }
 
   void _startPendingRoute() {
@@ -2932,6 +3009,7 @@ class LiveController extends Notifier<LiveUiState> {
     if (!_assistantActive || !_assistantTurnDone) return;
     _drainFallback?.cancel();
     _assistantActive = false;
+    _routeNotice = null; // el aviso de ruta, si lo había, ya sonó completo
     if (_onSpeaker) _log('[Lazarus] mic: reabierto ($reason)');
     ref.read(sosControllerProvider.notifier).assistantFinished();
     if (_afterSpeechHeard) _runAfterSpeech();
@@ -3279,4 +3357,20 @@ class LiveController extends Notifier<LiveUiState> {
       });
     }
   }
+}
+
+/// Un aviso de ruta enviado al asistente (LAZA-127): el mensaje, cuándo se
+/// envió y en qué ruta y punto iba la guía (`slug` nulo: la ruta terminó).
+class _RouteNotice {
+  const _RouteNotice({
+    required this.message,
+    required this.at,
+    this.slug,
+    this.next,
+  });
+
+  final String message;
+  final DateTime at;
+  final String? slug;
+  final int? next;
 }
