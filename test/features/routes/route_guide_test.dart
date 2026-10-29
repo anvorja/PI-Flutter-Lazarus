@@ -414,6 +414,7 @@ void main() {
     late FakeLiveSessionRepository session;
     late FakeLocationRepository gps;
     late FakeDeviceAccess access;
+    late FakeMediaRepository media;
     late List<String> logs;
     late ProviderContainer container;
     final t0 = DateTime(2026, 10, 24, 9);
@@ -455,6 +456,7 @@ void main() {
       session = FakeLiveSessionRepository();
       gps = FakeLocationRepository();
       access = FakeDeviceAccess()..routes = jsonEncode([_profileJson()]);
+      media = FakeMediaRepository();
       logs = [];
       final original = debugPrint;
       debugPrint = (message, {wrapWidth}) => logs.add(message ?? '');
@@ -466,7 +468,9 @@ void main() {
           networkStatusRepositoryProvider.overrideWithValue(
             FakeNetworkStatus(),
           ),
-          mediaRepositoryProvider.overrideWithValue(FakeMediaRepository()),
+          mediaRepositoryProvider.overrideWithValue(media),
+          cameraLockDelayProvider.overrideWithValue(Duration.zero),
+          cameraUnlockDelayProvider.overrideWithValue(Duration.zero),
           backgroundSessionRepositoryProvider.overrideWithValue(
             FakeBackgroundSession(),
           ),
@@ -674,6 +678,8 @@ void main() {
       await callTool('start_route');
       live().checkRoute(); // torniquetes
       await settle();
+      // El corte llega un minuto después: el aviso ya no se repite (LAZA-127).
+      now = t0.add(const Duration(minutes: 1));
       session.emitError();
       await settle();
       session.emitSetupComplete();
@@ -690,6 +696,130 @@ void main() {
       live().checkRoute();
       await settle();
       expect(session.routeGuides.last, startsWith('reached point 2 of 4'));
+    });
+
+    /// Recorre la ruta hasta el último punto: la guía avisa la llegada.
+    Future<void> walkToTheEnd() async {
+      for (var i = 0; i < 4; i++) {
+        gps.fixes.add(_at(i * _step, at: t0.add(Duration(seconds: 9 + 3 * i))));
+        await settle();
+        live().checkRoute();
+        await settle();
+      }
+    }
+
+    test('un aviso cortado al cambiar de sesión se repite en la nueva '
+        '(28-oct, LAZA-127)', () async {
+      await connect();
+      await reliableAt(0);
+      await callTool('start_route');
+      live().checkRoute(); // torniquetes: el aviso no alcanza a sonar
+      await settle();
+      now = t0.add(const Duration(seconds: 3));
+      session.emitError();
+      await settle();
+      session.emitSetupComplete();
+      await settle();
+      expect(
+        session.routeGuides.last,
+        startsWith('repeat: the session changed while you were saying this'),
+      );
+      expect(session.routeGuides.last, contains("reached point 1 of 4"));
+      expect(
+        session.routeGuides.where((m) => m.startsWith('still guiding')),
+        isEmpty,
+      );
+      expect(
+        logs,
+        contains(
+          '[Lazarus] ruta: se repite el aviso cortado al cambiar de sesión',
+        ),
+      );
+    });
+
+    test('bloquear la pantalla espera a que suene el aviso de ruta '
+        '(LAZA-127)', () async {
+      await connect();
+      await reliableAt(0);
+      await callTool('start_route');
+      live().checkRoute(); // torniquetes
+      await settle();
+      final calls = session.connectCalls;
+      live().onVisibilityChanged(false);
+      await settle();
+      expect(session.connectCalls, calls, reason: 'el aviso aún no suena');
+      expect(
+        logs,
+        contains(
+          '[Lazarus] cambio de sesión en espera: suena un aviso de ruta',
+        ),
+      );
+      // El asistente dice el aviso completo; recién ahí cambia la sesión.
+      session.emitResponse(
+        const LiveResponse(type: LiveResponseType.audio, data: 'AAAA'),
+      );
+      session.emitResponse(
+        const LiveResponse(type: LiveResponseType.turnComplete),
+      );
+      await settle();
+      media.onDrained!();
+      await settle();
+      expect(session.connectCalls, calls + 1);
+      session.emitSetupComplete();
+      await settle();
+      expect(session.routeGuides.last, startsWith('still guiding'));
+    });
+
+    test('un aviso cortado hace rato no se repite', () async {
+      await connect();
+      await reliableAt(0);
+      await callTool('start_route');
+      live().checkRoute();
+      await settle();
+      now = t0.add(const Duration(seconds: 50));
+      session.emitError();
+      await settle();
+      session.emitSetupComplete();
+      await settle();
+      expect(session.routeGuides.last, startsWith('still guiding'));
+      expect(
+        logs,
+        contains(
+          '[Lazarus] ruta: aviso cortado al cambiar de sesión, descartado '
+          '(pasaron 50 s)',
+        ),
+      );
+    });
+
+    test('la llegada cortada se repite si no empezó otra ruta', () async {
+      await connect();
+      await reliableAt(0);
+      await callTool('start_route');
+      await walkToTheEnd();
+      expect(session.routeGuides.last, startsWith('finished'));
+      session.emitError();
+      await settle();
+      session.emitSetupComplete();
+      await settle();
+      expect(session.routeGuides.last, startsWith('repeat:'));
+      expect(session.routeGuides.last, contains('finished'));
+    });
+
+    test('la llegada cortada no se repite si ya empezó otra ruta', () async {
+      await connect();
+      await reliableAt(0);
+      await callTool('start_route');
+      await walkToTheEnd();
+      final guides = session.routeGuides.length;
+      await callTool('start_route', {'destination': 'la entrada'});
+      session.emitError();
+      await settle();
+      session.emitSetupComplete();
+      await settle();
+      expect(
+        session.routeGuides.skip(guides).where((m) => m.startsWith('repeat')),
+        isEmpty,
+      );
     });
 
     test('Detener sí termina la ruta', () async {

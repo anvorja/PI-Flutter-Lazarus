@@ -16,6 +16,11 @@ const Duration routeCheckInterval = Duration(seconds: 2);
 /// Cuánto espera una ruta pedida sin GPS confiable antes de desistir.
 const Duration routeGpsWait = Duration(minutes: 5);
 
+/// Hasta cuándo se repite un aviso de ruta que se cortó al cambiar de sesión
+/// (LAZA-127). Una sesión nueva tarda de 2 a 12 s en abrir; pasado este
+/// tiempo, la persona ya siguió caminando y el aviso no corresponde.
+const Duration routeNoticeRepeatWindow = Duration(seconds: 45);
+
 /// `passed`: la persona ya va hacia el punto que sigue sin haber entrado al
 /// radio de este; la guía avanza sin anunciarlo. `rejoined`: llegó a un punto
 /// más adelante que los que se buscan, por otro camino, y la guía sigue desde
