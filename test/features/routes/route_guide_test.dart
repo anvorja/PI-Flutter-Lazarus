@@ -351,8 +351,45 @@ void main() {
       });
       // En la estación: el último punto de la vuelta es el más cercano.
       expect(pickRoute([vuelta, ida], _at(0), 'Unicentro')!.slug, 'ida');
-      expect(pickRoute([vuelta, ida], _at(0), 'el cine')!.slug, 'ida');
-      expect(pickRoute([vuelta], _at(0), 'el cine')!.slug, 'vuelta');
+      // Sin destino, la que no terminó.
+      expect(pickRoute([vuelta, ida], _at(0), '')!.slug, 'ida');
+    });
+
+    test('un destino que no es el de ningún perfil no elige ninguno '
+        '(28-oct: "Utrega", LAZA-128)', () {
+      final routes = [other, profile];
+      expect(pickRoute(routes, _at(0), 'Utrega'), isNull);
+      expect(pickRoute(routes, _at(0), 'el cine'), isNull);
+      expect(isUnknownDestination(routes, _at(0), 'Utrega'), isTrue);
+      expect(
+        destinationsNear([profile, other, far], _at(0)),
+        unorderedEquals(['Entrada', 'Biblioteca']),
+      );
+      // Lejos de toda ruta no es un destino desconocido: no hay ruta.
+      expect(isUnknownDestination([far], _at(0), 'Utrega'), isFalse);
+      // Un destino conocido o ninguno no es desconocido.
+      expect(isUnknownDestination(routes, _at(0), 'la biblioteca'), isFalse);
+      expect(isUnknownDestination(routes, _at(0), ''), isFalse);
+    });
+
+    test('"la universidad" es Univalle, pero "Universidades" no', () {
+      final ida = RouteProfile.fromJson(
+        _profileJson(slug: 'ida', destination: 'Univalle'),
+      );
+      final otra = RouteProfile.fromJson(
+        _profileJson(slug: 'otra', destination: 'Universidades'),
+      );
+      expect(pickRoute([otra, ida], _at(0), 'a la universidad')!.slug, 'ida');
+      expect(pickRoute([ida, otra], _at(0), 'a Universidades')!.slug, 'otra');
+    });
+
+    test('"guíame por mi ruta" no es un destino', () {
+      final routes = [other, profile];
+      expect(
+        pickRoute(routes, _at(0), 'guíame por mi ruta')!.slug,
+        'estacion-prueba-biblioteca',
+      );
+      expect(isUnknownDestination(routes, _at(0), 'mi ruta'), isFalse);
     });
 
     test('un perfil mal formado se descarta', () {
@@ -524,6 +561,43 @@ void main() {
       await connect();
       await reliableAt(0);
       expect(await callTool('start_route'), isNot(contains('not validated')));
+    });
+
+    test('un destino desconocido no arranca ninguna ruta y pregunta '
+        '(LAZA-128)', () async {
+      await connect();
+      await reliableAt(0);
+      final result = await callTool('start_route', {'destination': 'Utrega'});
+      expect(result, startsWith('unknown_destination:'));
+      expect(result, contains("go to: 'Entrada'"));
+      live().checkRoute();
+      await settle();
+      expect(session.routeGuides, isEmpty);
+      expect(
+        logs,
+        contains(
+          '[Lazarus] ruta: destino "Utrega" sin perfil; no se inicia '
+          '(destinos cerca: Entrada)',
+        ),
+      );
+    });
+
+    test('un destino desconocido en espera del GPS tampoco arranca', () async {
+      await connect();
+      expect(
+        await callTool('start_route', {'destination': 'Utrega'}),
+        startsWith('waiting_gps'),
+      );
+      await reliableAt(0);
+      live().checkRoute();
+      await settle();
+      expect(
+        session.routeGuides.single,
+        startsWith('not started. unknown_destination:'),
+      );
+      live().checkRoute();
+      await settle();
+      expect(session.routeGuides, hasLength(1));
     });
 
     test('lejos de toda ruta no arranca', () async {

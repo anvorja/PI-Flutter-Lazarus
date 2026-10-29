@@ -394,17 +394,11 @@ String _crossingName(RouteCrossing crossing) => switch (crossing) {
   RouteCrossing.uncontrolled => 'uncontrolled crossing',
 };
 
-/// El perfil que pasa cerca de la posición (a [maxStartM] o menos de alguno
-/// de sus puntos, para poder retomarlo a mitad de camino), prefiriendo el que
-/// va al destino que dijo la persona. Si el destino no es el de ningún perfil,
-/// sirve uno que lo nombre en un punto que falta ("Unicentro" en la ida a
-/// Univalle). Sin coincidencias no se elige un perfil que la persona ya
-/// terminó: el 27-oct, "llévame a Unicentro" en la estación tomó la vuelta,
-/// cuyo último punto era el más cercano, y la ruta terminó al instante.
-RouteProfile? pickRoute(
+/// Los perfiles que pasan cerca de la posición (a [maxStartM] o menos de
+/// alguno de sus puntos), del más cercano al más lejano.
+List<RouteProfile> routesNear(
   List<RouteProfile> profiles,
-  LocationFix fix,
-  String destination, {
+  LocationFix fix, {
   double maxStartM = 250,
 }) {
   double startDistance(RouteProfile r) {
@@ -412,12 +406,33 @@ RouteProfile? pickRoute(
     return distanceMeters(fix.latitude, fix.longitude, p.latitude, p.longitude);
   }
 
-  final near = [
+  return [
     for (final r in profiles)
       if (startDistance(r) <= maxStartM) r,
   ]..sort((a, b) => startDistance(a).compareTo(startDistance(b)));
+}
+
+/// El perfil que pasa cerca de la posición (para poder retomarlo a mitad de
+/// camino), prefiriendo el que va al destino que dijo la persona. Si el
+/// destino no es el de ningún perfil, sirve uno que lo nombre en un punto que
+/// falta ("Unicentro" en la ida a Univalle). Sin coincidencias no se elige un
+/// perfil que la persona ya terminó: el 27-oct, "llévame a Unicentro" en la
+/// estación tomó la vuelta, cuyo último punto era el más cercano, y la ruta
+/// terminó al instante.
+///
+/// Si la persona dijo un destino y ningún perfil cercano lo tiene, devuelve
+/// `null` aunque haya perfiles cerca: el 28-oct el asistente entendió
+/// "Utrega" y la app inició la ruta más cercana (hallazgo 46, LAZA-128). Ver
+/// [isUnknownDestination].
+RouteProfile? pickRoute(
+  List<RouteProfile> profiles,
+  LocationFix fix,
+  String destination, {
+  double maxStartM = 250,
+}) {
+  final near = routesNear(profiles, fix, maxStartM: maxStartM);
   if (near.isEmpty) return null;
-  final words = _words(destination);
+  final words = _destinationWords(destination);
   if (words.isNotEmpty) {
     for (final r in near) {
       // Solo el destino: el nombre de la vuelta también nombra el origen.
@@ -428,6 +443,7 @@ RouteProfile? pickRoute(
       final ahead = r.points.skip(nearestPointIndex(r, fix) + 1);
       if (ahead.any((p) => words.any(_words(p.name).contains))) return r;
     }
+    return null;
   }
   final unfinished = [
     for (final r in near)
@@ -435,6 +451,52 @@ RouteProfile? pickRoute(
   ];
   return unfinished.isEmpty ? near.first : unfinished.first;
 }
+
+/// Hay perfiles cerca, pero ninguno va al destino que dijo la persona: no se
+/// inicia ninguna ruta y el asistente le pregunta a cuál va (LAZA-128).
+bool isUnknownDestination(
+  List<RouteProfile> profiles,
+  LocationFix fix,
+  String destination, {
+  double maxStartM = 250,
+}) =>
+    _destinationWords(destination).isNotEmpty &&
+    routesNear(profiles, fix, maxStartM: maxStartM).isNotEmpty &&
+    pickRoute(profiles, fix, destination, maxStartM: maxStartM) == null;
+
+/// Los destinos de los perfiles cercanos, sin repetir, para que el asistente
+/// pregunte a cuál va la persona.
+List<String> destinationsNear(
+  List<RouteProfile> profiles,
+  LocationFix fix, {
+  double maxStartM = 250,
+}) => {
+  for (final r in routesNear(profiles, fix, maxStartM: maxStartM))
+    r.destination,
+}.toList();
+
+/// Palabras que no dicen a dónde va la persona ("guíame por mi ruta").
+const _notDestination = {
+  'ruta',
+  'rutas',
+  'camino',
+  'destino',
+  'guiame',
+  'guiar',
+  'llevame',
+  'llevar',
+  'quiero',
+  'hasta',
+  'hacia',
+  'para',
+  'favor',
+  'aqui',
+  'alla',
+  'donde',
+};
+
+Set<String> _destinationWords(String destination) =>
+    _words(destination).difference(_notDestination);
 
 Set<String> _words(String text) {
   const from = 'áéíóúüñ';
@@ -444,6 +506,9 @@ Set<String> _words(String text) {
     t = t.replaceAll(from[i], to[i]);
   }
   t = t.replaceAll('universidad del valle', 'univalle');
+  // "La universidad" es Univalle en el piloto; "Universidades" (la estación
+  // Universidades–Jardín Plaza) no se toca.
+  t = t.replaceAll(RegExp(r'\buniversidad\b'), 'univalle');
   return {
     for (final w in t.split(RegExp(r'[^a-z0-9]+')))
       if (w.length >= 4) w,
