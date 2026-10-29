@@ -17,6 +17,7 @@ const List<String> uploadableFiles = [
   'gps_track.csv',
   'notas_campo_anterior.csv',
   'notas_campo.csv',
+  'notas_ruta.csv',
 ];
 
 /// Máximo por fragmento (el backend acepta hasta 5 MB por archivo).

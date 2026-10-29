@@ -5,6 +5,7 @@ library;
 import 'dart:convert';
 
 import 'package:app/features/access/presentation/providers/access_providers.dart';
+import 'package:app/features/field_notes/presentation/providers/field_notes_providers.dart';
 import 'package:app/features/live/domain/entities/live_message.dart';
 import 'package:app/features/live/presentation/controllers/live_controller.dart';
 import 'package:app/features/live/presentation/providers/live_providers.dart';
@@ -415,6 +416,7 @@ void main() {
     late FakeLocationRepository gps;
     late FakeDeviceAccess access;
     late FakeMediaRepository media;
+    late FakeNoteRecorder notes;
     late List<String> logs;
     late ProviderContainer container;
     final t0 = DateTime(2026, 10, 24, 9);
@@ -457,6 +459,7 @@ void main() {
       gps = FakeLocationRepository();
       access = FakeDeviceAccess()..routes = jsonEncode([_profileJson()]);
       media = FakeMediaRepository();
+      notes = FakeNoteRecorder();
       logs = [];
       final original = debugPrint;
       debugPrint = (message, {wrapWidth}) => logs.add(message ?? '');
@@ -469,6 +472,7 @@ void main() {
             FakeNetworkStatus(),
           ),
           mediaRepositoryProvider.overrideWithValue(media),
+          noteRecorderProvider.overrideWithValue(notes),
           cameraLockDelayProvider.overrideWithValue(Duration.zero),
           cameraUnlockDelayProvider.overrideWithValue(Duration.zero),
           backgroundSessionRepositoryProvider.overrideWithValue(
@@ -820,6 +824,25 @@ void main() {
         session.routeGuides.skip(guides).where((m) => m.startsWith('repeat')),
         isEmpty,
       );
+    });
+
+    test('una nota dictada con la ruta activa lleva la ruta y el punto al que '
+        'iba (HU-050)', () async {
+      await connect();
+      await reliableAt(0);
+      await callTool('add_note', {'text': 'antes de la ruta'});
+      await callTool('start_route');
+      live().checkRoute(); // torniquetes: el siguiente es el punto 2
+      await settle();
+      await callTool('add_note', {'text': 'aquí la rampa está a la izquierda'});
+      expect(notes.notes.first.route, isNull);
+      final noted = notes.notes.last;
+      expect(noted.route, 'estacion-prueba-ida');
+      expect(noted.nextPoint, 2);
+      expect(noted.nextPointName, 'Árbol grande');
+      await callTool('stop_route');
+      await callTool('add_note', {'text': 'después de la ruta'});
+      expect(notes.notes.last.route, isNull);
     });
 
     test('Detener sí termina la ruta', () async {

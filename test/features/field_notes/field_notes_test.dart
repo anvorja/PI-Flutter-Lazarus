@@ -404,6 +404,37 @@ void main() {
       },
     );
 
+    test('con una ruta activa, la ruta y el punto van a notas_ruta.csv '
+        '(HU-050)', () async {
+      final recorder = CsvNoteRecorder(() async => dir);
+      final at = DateTime(2026, 11, 7, 9, 10);
+      await recorder.add(
+        FieldNote(
+          at: at,
+          text: 'aquí debe decir gira a la derecha',
+          route: 'estacion-univalle-ida',
+          nextPoint: 3,
+          nextPointName: 'Cebra, frente a la portería',
+        ),
+      );
+      await recorder.add(FieldNote(at: at, text: 'sin ruta'));
+      final notes = File('${dir.path}/$fieldNotesFileName').readAsLinesSync();
+      expect(notes.first, fieldNotesHeader, reason: 'el encabezado no cambia');
+      expect(notes, hasLength(3));
+      final route = File('${dir.path}/$routeNotesFileName').readAsLinesSync();
+      expect(route, [
+        routeNotesHeader,
+        '${at.toIso8601String()},estacion-univalle-ida,3,'
+            '"Cebra, frente a la portería",aquí debe decir gira a la derecha',
+      ]);
+    });
+
+    test('sin ruta activa no se crea notas_ruta.csv', () async {
+      final recorder = CsvNoteRecorder(() async => dir);
+      await recorder.add(FieldNote(at: DateTime(2026, 11, 7), text: 'nota'));
+      expect(File('${dir.path}/$routeNotesFileName').existsSync(), isFalse);
+    });
+
     test('un archivo con el encabezado anterior se guarda aparte', () async {
       final recorder = CsvNoteRecorder(() async => dir);
       File file() => File('${dir.path}/$fieldNotesFileName');

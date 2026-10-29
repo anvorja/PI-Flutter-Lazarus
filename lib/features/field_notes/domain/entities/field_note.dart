@@ -15,6 +15,9 @@ class FieldNote {
     this.fix,
     this.reliability = GpsReliability.unknown,
     this.heading,
+    this.route,
+    this.nextPoint,
+    this.nextPointName,
   });
 
   final DateTime at;
@@ -27,4 +30,11 @@ class FieldNote {
   /// Hacia dónde miraba o caminaba (brújula o GPS); `null` sin lecturas. Lo
   /// pidieron los participantes de la Fase 0 para cada punto.
   final Heading? heading;
+
+  /// Ruta activa al dictarla (`slug` del perfil) y el punto al que iba, contado
+  /// desde 1 (HU-050): el editor del panel la muestra junto a ese punto como
+  /// corrección sugerida. `null` sin ruta activa.
+  final String? route;
+  final int? nextPoint;
+  final String? nextPointName;
 }
