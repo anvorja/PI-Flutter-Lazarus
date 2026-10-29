@@ -187,6 +187,29 @@ void main() {
       },
     );
 
+    test('una corrección dictada sin "anota" también se guarda '
+        '(27-oct, D2, LAZA-130)', () async {
+      hear(' En este punto debe decir');
+      hear(' gira a la derecha.');
+      await assistantSaysAndEnds('Anotado, corrijo.');
+      expect(
+        notes.notes.single.text,
+        'Corrección: En este punto debe decir gira a la derecha.',
+      );
+      expect(
+        logs,
+        contains(
+          '[Lazarus] nota guardada por la app (corrección dictada sin "anota")',
+        ),
+      );
+    });
+
+    test('una corrección con "anota" no se guarda dos veces', () async {
+      hear(' Anota que aquí debería decir gira a la derecha.');
+      await assistantSaysAndEnds('Anotado.');
+      expect(notes.notes.single.text, 'aquí debería decir gira a la derecha');
+    });
+
     test('si sí llama a add_note, no la duplica', () async {
       hear(' Anota que hay un escalón.');
       await addNote({'text': 'hay un escalón'});
@@ -301,6 +324,31 @@ void main() {
       expect(saysNoted('Anotado. El semáforo peatonal está en verde.'), isTrue);
       expect(saysNoted('Noted.'), isTrue);
       expect(saysNoted('Semáforo en rojo.'), isFalse);
+    });
+
+    test('frases de corrección del perfil (LAZA-130)', () {
+      expect(
+        correctionNoteText(' En este punto debe decir gira a la derecha.'),
+        'Corrección: En este punto debe decir gira a la derecha.',
+      );
+      expect(
+        correctionNoteText('Aquí no es a la izquierda, es a la derecha'),
+        startsWith('Corrección: '),
+      );
+      expect(
+        correctionNoteText('debería decir que hay una rampa'),
+        startsWith('Corrección: '),
+      );
+      expect(
+        correctionNoteText('corrige el punto de la cebra'),
+        startsWith('Corrección: '),
+      );
+      expect(correctionNoteText('It should say turn left'), isNotNull);
+      // Lo que no es una corrección del perfil no se anota.
+      expect(correctionNoteText('Eso está mal, no veo nada'), isNull);
+      expect(correctionNoteText('¿Qué debo hacer ahora?'), isNull);
+      expect(correctionNoteText('No es necesario'), isNull);
+      expect(correctionNoteText('  '), isNull);
     });
   });
 
