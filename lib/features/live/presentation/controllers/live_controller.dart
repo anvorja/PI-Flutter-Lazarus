@@ -2880,6 +2880,10 @@ class LiveController extends Notifier<LiveUiState> {
     final location = ref.read(locationControllerProvider);
     final fix = location.fix;
     final at = ref.read(liveClockProvider)();
+    // Con una ruta activa, la nota lleva la ruta y el punto al que iba
+    // (HU-050): el editor del panel la ofrece como corrección de ese punto.
+    final guide = _routeGuide;
+    final next = guide == null || guide.finished ? null : guide.nextPoint;
     final saved = await ref
         .read(noteRecorderProvider)
         .add(
@@ -2889,6 +2893,9 @@ class LiveController extends Notifier<LiveUiState> {
             fix: fix,
             reliability: location.reliability,
             heading: location.heading,
+            route: next == null ? null : guide!.profile.slug,
+            nextPoint: next == null ? null : guide!.nextIndex + 1,
+            nextPointName: next?.name,
           ),
         );
     if (!saved) {

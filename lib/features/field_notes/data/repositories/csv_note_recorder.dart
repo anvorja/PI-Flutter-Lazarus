@@ -20,6 +20,13 @@ const String fieldNotesHeader =
 /// mezclar columnas.
 const String fieldNotesPreviousFileName = 'notas_campo_anterior.csv';
 
+/// Ruta y punto de cada nota dictada con una ruta activa (HU-050). Va en un
+/// archivo aparte: cambiar el encabezado de `notas_campo.csv` rompería la
+/// subida al panel, que manda solo lo nuevo de cada archivo. El panel une las
+/// dos por la hora y el texto.
+const String routeNotesFileName = 'notas_ruta.csv';
+const String routeNotesHeader = 'hora,ruta,punto,nombre_punto,nota';
+
 class CsvNoteRecorder implements NoteRecorder {
   CsvNoteRecorder(this._directory);
 
@@ -55,6 +62,22 @@ class CsvNoteRecorder implements NoteRecorder {
         mode: FileMode.append,
         flush: true,
       );
+      final route = note.route;
+      if (route != null) {
+        final routeFile = File('${dir.path}/$routeNotesFileName');
+        final routeLine = [
+          note.at.toIso8601String(),
+          csvField(route),
+          note.nextPoint?.toString() ?? '',
+          csvField(note.nextPointName ?? ''),
+          csvField(note.text),
+        ].join(',');
+        routeFile.writeAsStringSync(
+          '${routeFile.existsSync() ? '' : '$routeNotesHeader\n'}$routeLine\n',
+          mode: FileMode.append,
+          flush: true,
+        );
+      }
       return true;
     } catch (_) {
       return false; // sin espacio o sin acceso: la nota no debe tumbar la app
