@@ -187,6 +187,24 @@ String? noteRequestText(String heard) {
   return before.isEmpty ? null : before;
 }
 
+/// Corrección del perfil dictada sin "anota" (LAZA-130, D2 de QA-004): el
+/// 27-oct "en este punto debe decir gira a la derecha" recibió "Anotado,
+/// corrijo" y no se guardó nada. Devuelve la nota "Corrección: …" con lo que
+/// dijo la persona, o `null` si no es una corrección. Solo frases claras:
+/// "está mal" a secas no basta, porque puede hablar de otra cosa.
+String? correctionNoteText(String heard) {
+  final text = heard.trim().replaceAll(RegExp(r'\s+'), ' ');
+  if (text.isEmpty) return null;
+  final norm = normalizeForMatch(text);
+  final isCorrection = RegExp(
+    r'\b(debe|deberia|deberias|tiene que|tendria que) (de )?decir\b'
+    r'|\b(aqui|en este punto|este punto|en esta parte|este tramo) no (es|era|hay|va)\b'
+    r'|\b(corrige|corrigelo|corrigela|corregir|correccion)\b'
+    r'|\b(should say|it should be|correction)\b',
+  ).hasMatch(norm);
+  return isCorrection ? 'Corrección: $text' : null;
+}
+
 /// La nota solo marca el lugar ("posición", "coordenadas", "guarda posición"):
 /// en la jornada del 24-oct un participante dejó 15 así, sin decir qué había.
 bool isPlaceMarkerNote(String text) {
@@ -2411,10 +2429,15 @@ class LiveController extends Notifier<LiveUiState> {
     _noteCalled = false;
     _noteTextExpected = !called && asksWhatToNote(said);
     if (called) return;
-    final text = noteRequestText(heard) ?? (expected ? heard.trim() : null);
+    final requested =
+        noteRequestText(heard) ?? (expected ? heard.trim() : null);
+    final correction = requested == null ? correctionNoteText(heard) : null;
+    final text = requested ?? correction;
     if (text == null || text.isEmpty) return;
     _log(
-      saysNoted(said)
+      correction != null
+          ? '[Lazarus] nota guardada por la app (corrección dictada sin "anota")'
+          : saysNoted(said)
           ? '[Lazarus] nota guardada por la app (el asistente dijo "Anotado" sin llamar a add_note)'
           : '[Lazarus] nota guardada por la app (la persona pidió anotar y el asistente no llamó a add_note)',
     );
