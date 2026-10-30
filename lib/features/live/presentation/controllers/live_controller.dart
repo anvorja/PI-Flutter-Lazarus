@@ -1094,6 +1094,14 @@ class LiveController extends Notifier<LiveUiState> {
   /// fase 1): se avisa otra vez solo cuando se recupera.
   bool _routeGpsLost = false;
 
+  /// Llegó a un cruce de la ruta: el ciclo de observación solo avisa riesgos
+  /// hasta [crossingQuietFor] después (HU-020).
+  DateTime? _crossingSince;
+
+  /// Cuándo se perdió el GPS y si ya se sugirió pedir ayuda (HU-021, regla 5).
+  DateTime? _routeGpsLostAt;
+  bool _routeGpsHelpSent = false;
+
   /// El último aviso de ruta, hasta que termina de sonar (LAZA-127). Si la
   /// sesión cambia antes, se repite en la siguiente mientras siga vigente.
   _RouteNotice? _routeNotice;
@@ -2381,7 +2389,10 @@ class LiveController extends Notifier<LiveUiState> {
     _lastActivity = now;
     // En pausa la app lo dice en el propio mensaje: el modelo no siempre
     // recuerda que se pausó a mitad de la sesión (CP-LAZA-107).
-    _session.sendObserve(risksOnly: !_settings.getDescribing());
+    final crossing = _crossingSince;
+    final crossingNow =
+        crossing != null && now.difference(crossing) < crossingQuietFor;
+    _session.sendObserve(risksOnly: !_settings.getDescribing() || crossingNow);
   }
 
   /// Cierra el `[OBSERVA]` en curso; si el asistente no habló, calló (correcto
@@ -2694,7 +2705,7 @@ class LiveController extends Notifier<LiveUiState> {
     if (route == null) return null;
     final startAt = nearestPointIndex(route, fix);
     _routeGuide = RouteGuide(route, startAt: startAt);
-    _routeGpsLost = false;
+    _resetRouteGps();
     final total = route.points.length;
     _log(
       '[Lazarus] ruta: iniciada "${route.slug}" ($total puntos, '
@@ -2719,7 +2730,8 @@ class LiveController extends Notifier<LiveUiState> {
     _routeWatch?.cancel();
     _routeWatch = null;
     _routeGuide = null;
-    _routeGpsLost = false;
+    _resetRouteGps();
+    _crossingSince = null;
     _pendingRouteDestination = null;
     _pendingRouteSince = null;
     _routeNotice = null;
@@ -2744,7 +2756,7 @@ class LiveController extends Notifier<LiveUiState> {
     if (fix == null) return;
     final event = guide.update(fix, location.reliability);
     if (event == null) return;
-    final message = describeRouteEvent(
+    var message = describeRouteEvent(
       event,
       fix,
       (p) => ref
@@ -2757,6 +2769,21 @@ class LiveController extends Notifier<LiveUiState> {
       return;
     }
     final point = event.point;
+    final now = ref.read(liveClockProvider)();
+    final atCrossing =
+        (event.kind == RouteEventKind.arrived ||
+            event.kind == RouteEventKind.rejoined) &&
+        (point.crossing != null || event.next?.crossing != null);
+    final nearCrossing =
+        atCrossing ||
+        (event.kind == RouteEventKind.approaching && point.crossing != null);
+    if (event.kind == RouteEventKind.arrived ||
+        event.kind == RouteEventKind.rejoined) {
+      _crossingSince = atCrossing ? now : null;
+    }
+    if (nearCrossing && isNight(now)) message = '$message$nightCrossingNote';
+    // Hacia la otra acera: la misma vibración direccional de HU-021.
+    if (atCrossing) _vibrateTowardsNext(guide);
     if (state.meetingMode &&
         point.crossing == null &&
         point.risk != RouteRisk.high) {
@@ -2772,18 +2799,42 @@ class LiveController extends Notifier<LiveUiState> {
   /// cuando el GPS vuelve. También en modo reunión: cambia lo que puede decir.
   bool _routeGpsChanged(RouteGuide guide, LocationState location) {
     final reliability = location.reliability;
+    final now = ref.read(liveClockProvider)();
     if (!_routeGpsLost && reliability == GpsReliability.unreliable) {
       _routeGpsLost = true;
+      _routeGpsLostAt = now;
+      _routeGpsHelpSent = false;
+      ref.read(stepCounterProvider).start();
       final accuracy = location.fix?.accuracyM;
       _log(
         '[Lazarus] ruta: GPS no confiable'
         '${accuracy == null ? '' : ' (±${accuracy.toStringAsFixed(0)} m)'}',
       );
       _sendRoute(_routeGpsLostMessage(guide));
+      _vibrateTowardsNext(guide);
+      return true;
+    }
+    final lostAt = _routeGpsLostAt;
+    if (_routeGpsLost &&
+        reliability != GpsReliability.reliable &&
+        !_routeGpsHelpSent &&
+        lostAt != null &&
+        now.difference(lostAt) >= routeGpsHelpAfter) {
+      // Regla 5: tras 3 minutos sin GPS, sugerir ayuda. La app no sabe si el
+      // asistente reconoce referencias; el tiempo sin GPS es lo que puede medir.
+      _routeGpsHelpSent = true;
+      _log('[Lazarus] ruta: ${routeGpsHelpAfter.inMinutes} min sin GPS');
+      _sendRoute(
+        'gps still lost: ${routeGpsHelpAfter.inMinutes} minutes without a '
+        'reliable GPS. Tell the person in one or two short sentences that you '
+        'are still not sure where they are, recommend asking a person nearby '
+        'for help, and offer to send the SOS to their contact. Call '
+        'trigger_sos only if they accept.',
+      );
       return true;
     }
     if (_routeGpsLost && reliability == GpsReliability.reliable) {
-      _routeGpsLost = false;
+      _resetRouteGps();
       _log('[Lazarus] ruta: GPS confiable otra vez');
       final next = guide.nextPoint;
       _sendRoute(
@@ -2810,7 +2861,68 @@ class LiveController extends Notifier<LiveUiState> {
     return "gps lost: the GPS is not reliable here, so the app pauses the point "
         "notices of '${guide.profile.name}' until it recovers. $seeing Never "
         'say which point they are at, how far it is or where they are; if they '
-        'ask, say you are not sure.';
+        'ask, say you are not sure. If they ask how far or which way, call '
+        'get_route_progress and say its answer as an estimate.';
+  }
+
+  void _resetRouteGps() {
+    if (_routeGpsLost) ref.read(stepCounterProvider).stop();
+    _routeGpsLost = false;
+    _routeGpsLostAt = null;
+    _routeGpsHelpSent = false;
+  }
+
+  /// Hora de reloj hacia el siguiente punto, desde la última posición
+  /// conocida y con la brújula de ahora; `null` sin brújula o sin punto.
+  int? _clockTowardsNext(RouteGuide guide) {
+    final next = guide.nextPoint;
+    if (next == null) return null;
+    return ref
+        .read(locationControllerProvider.notifier)
+        .clockHourTowards(next.latitude, next.longitude);
+  }
+
+  /// Vibración direccional hacia el siguiente punto (HU-021, regla 3).
+  void _vibrateTowardsNext(RouteGuide guide) {
+    final pulses = directionPulses(_clockTowardsNext(guide));
+    if (pulses == 0) return;
+    _log('[Lazarus] ruta: vibración de $pulses pulso(s)');
+    unawaited(ref.read(hapticPulsesProvider)(pulses));
+  }
+
+  /// Respuesta a `get_route_progress` (HU-021, regla 2): con GPS, el
+  /// siguiente punto; sin él, una estimación con los pasos contados desde que
+  /// se perdió y la brújula.
+  String _describeRouteProgress() {
+    final guide = _routeGuide;
+    if (guide == null) {
+      return 'none: there is no active route. Say so in one sentence.';
+    }
+    final next = guide.nextPoint;
+    if (next == null) return 'finished: the route is over.';
+    final total = guide.profile.points.length;
+    final location = ref.read(locationControllerProvider);
+    final fix = location.fix;
+    final clock = _clockTowardsNext(guide);
+    final towards = clock == null ? '' : " towards $clock o'clock";
+    final away = fix == null
+        ? ''
+        : ', about ${stepsFor(distanceMeters(fix.latitude, fix.longitude, next.latitude, next.longitude))} steps';
+    _vibrateTowardsNext(guide);
+    if (!_routeGpsLost) {
+      return "ok: next point ${guide.nextIndex + 1} of $total, '${next.name}'"
+          '$away$towards. Say it in one short sentence; the app will announce '
+          'it when they get there.';
+    }
+    final walked = ref.read(stepCounterProvider).steps;
+    final steps = walked > 0
+        ? 'Since the GPS was lost the phone counted about $walked steps. '
+        : '';
+    return 'estimate: the GPS is still lost. $steps'
+        "The next point, '${next.name}', was$away from where the GPS was lost"
+        '$towards with the compass now. Say it as an estimate ("more or less", '
+        '"by the steps"), never as a sure position, and check it with what you '
+        'see.';
   }
 
   void _sendRouteGoesOn() {
@@ -3329,6 +3441,10 @@ class LiveController extends Notifier<LiveUiState> {
           results[call.id] = _startRoute(
             (call.args['destination'] ?? '').toString(),
           );
+        case 'get_route_progress':
+          final progress = _describeRouteProgress();
+          _log('[Lazarus] avance de la ruta para el asistente: $progress');
+          results[call.id] = progress;
         case 'stop_route':
           final had = _routeGuide != null || _pendingRouteDestination != null;
           _stopRouteGuide();

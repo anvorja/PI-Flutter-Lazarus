@@ -9,6 +9,7 @@ import 'package:app/features/field_notes/presentation/providers/field_notes_prov
 import 'package:app/features/live/domain/entities/live_message.dart';
 import 'package:app/features/live/presentation/controllers/live_controller.dart';
 import 'package:app/features/live/presentation/providers/live_providers.dart';
+import 'package:app/features/location/domain/entities/heading.dart';
 import 'package:app/features/location/domain/entities/location_fix.dart';
 import 'package:app/features/location/presentation/providers/location_providers.dart';
 import 'package:app/features/routes/domain/route_guide.dart';
@@ -417,6 +418,9 @@ void main() {
     late FakeDeviceAccess access;
     late FakeMediaRepository media;
     late FakeNoteRecorder notes;
+    late FakeStepCounter steps;
+    late FakeCompassRepository compass;
+    late List<int> pulses;
     late List<String> logs;
     late ProviderContainer container;
     final t0 = DateTime(2026, 10, 24, 9);
@@ -460,6 +464,9 @@ void main() {
       access = FakeDeviceAccess()..routes = jsonEncode([_profileJson()]);
       media = FakeMediaRepository();
       notes = FakeNoteRecorder();
+      steps = FakeStepCounter();
+      compass = FakeCompassRepository();
+      pulses = [];
       logs = [];
       final original = debugPrint;
       debugPrint = (message, {wrapWidth}) => logs.add(message ?? '');
@@ -478,7 +485,9 @@ void main() {
           backgroundSessionRepositoryProvider.overrideWithValue(
             FakeBackgroundSession(),
           ),
-          compassRepositoryProvider.overrideWithValue(FakeCompassRepository()),
+          compassRepositoryProvider.overrideWithValue(compass),
+          stepCounterProvider.overrideWithValue(steps),
+          hapticPulsesProvider.overrideWithValue((n) async => pulses.add(n)),
           locationRepositoryProvider.overrideWithValue(gps),
           trackRecorderProvider.overrideWithValue(FakeTrackRecorder()),
           deviceAccessRepositoryProvider.overrideWithValue(access),
@@ -873,6 +882,39 @@ void main() {
       expect(session.routeGuides.single, contains('crossing: zebra crossing'));
     });
 
+    test('de noche, el aviso de un cruce pide decir que con poca luz no ve '
+        'los colores; de día no (HU-020)', () async {
+      await connect();
+      await reliableAt(0);
+      await callTool('start_route');
+      live().checkRoute(); // torniquetes, de día
+      await settle();
+      expect(session.routeGuides.last, isNot(contains('It is night')));
+      now = DateTime(2026, 10, 24, 19, 30);
+      gps.fixes.add(_at(_step, at: t0.add(const Duration(seconds: 9))));
+      await settle();
+      live().checkRoute(); // árbol grande: el siguiente es la cebra
+      await settle();
+      expect(session.routeGuides.last, contains('crossing: zebra crossing'));
+      expect(session.routeGuides.last, contains('It is night'));
+    });
+
+    test('al llegar a un cruce vibra hacia la otra acera (HU-020)', () async {
+      await connect();
+      await reliableAt(0);
+      compass.events.add(const CompassReading(headingDeg: 0, accuracyDeg: 5));
+      await settle();
+      await callTool('start_route');
+      live().checkRoute(); // torniquetes: no es cruce
+      await settle();
+      expect(pulses, isEmpty);
+      gps.fixes.add(_at(_step, at: t0.add(const Duration(seconds: 9))));
+      await settle();
+      live().checkRoute(); // árbol grande, antes de la cebra
+      await settle();
+      expect(pulses, [1]); // la cebra queda al frente
+    });
+
     test('sin GPS confiable lo dice una vez y luego que volvió (HU-021, fase '
         '1)', () async {
       await connect();
@@ -938,5 +980,96 @@ void main() {
       expect(session.routeGuides.last, startsWith('still guiding:'));
       expect(session.routeGuides.last, contains('gps lost:'));
     });
+
+    /// Con la ruta activa en el primer punto, el GPS pasa a no confiable.
+    Future<void> loseGps() async {
+      await connect();
+      await reliableAt(0);
+      await callTool('start_route');
+      live().checkRoute(); // torniquetes
+      await settle();
+      for (final s in [9, 15, 21]) {
+        gps.fixes.add(_at(0, accuracy: 40, at: t0.add(Duration(seconds: s))));
+      }
+      await settle();
+      live().checkRoute();
+      await settle();
+      expect(session.routeGuides.last, startsWith('gps lost:'));
+    }
+
+    test('sin GPS cuenta los pasos y a los 3 minutos sugiere ayuda o el SOS, '
+        'una vez (HU-021)', () async {
+      await loseGps();
+      expect(steps.running, isTrue);
+      now = t0.add(const Duration(minutes: 2));
+      live().checkRoute();
+      await settle();
+      expect(session.routeGuides.last, startsWith('gps lost:'));
+
+      now = t0.add(routeGpsHelpAfter + const Duration(seconds: 30));
+      live().checkRoute();
+      await settle();
+      expect(session.routeGuides.last, startsWith('gps still lost:'));
+      expect(session.routeGuides.last, contains('trigger_sos only if'));
+      final count = session.routeGuides.length;
+      now = t0.add(const Duration(minutes: 6));
+      live().checkRoute();
+      await settle();
+      expect(session.routeGuides, hasLength(count));
+
+      for (final s in [400, 403, 406]) {
+        gps.fixes.add(_at(0, at: t0.add(Duration(seconds: s))));
+      }
+      await settle();
+      live().checkRoute();
+      await settle();
+      expect(session.routeGuides.last, startsWith('gps back:'));
+      expect(steps.running, isFalse);
+    });
+
+    test('get_route_progress sin GPS da una estimación con los pasos y vibra '
+        'hacia el punto (HU-021)', () async {
+      await loseGps();
+      compass.events.add(const CompassReading(headingDeg: 0, accuracyDeg: 5));
+      await settle();
+      steps.steps = 42;
+      final progress = await callTool('get_route_progress');
+      expect(progress, startsWith('estimate: the GPS is still lost.'));
+      expect(progress, contains('about 42 steps'));
+      expect(progress, contains("'Árbol grande'"));
+      expect(progress, contains('never as a sure position'));
+      expect(pulses, isNotEmpty);
+      expect(pulses.last, 1); // el punto queda al frente (norte)
+    });
+
+    test(
+      'get_route_progress con GPS da el siguiente punto; sin ruta lo dice',
+      () async {
+        await connect();
+        expect(await callTool('get_route_progress'), startsWith('none:'));
+        await reliableAt(0);
+        await callTool('start_route');
+        live().checkRoute();
+        await settle();
+        expect(
+          await callTool('get_route_progress'),
+          startsWith("ok: next point 2 of 4, 'Árbol grande'"),
+        );
+      },
+    );
+  });
+
+  test('pulsos de la vibración direccional (HU-021, regla 3)', () {
+    expect([12, 1, 11].map(directionPulses), [1, 1, 1]);
+    expect([2, 3, 4].map(directionPulses), [2, 2, 2]);
+    expect([8, 9, 10].map(directionPulses), [3, 3, 3]);
+    expect([5, 6, 7, null].map(directionPulses), [0, 0, 0, 0]);
+  });
+
+  test('franja nocturna de 18:00 a 6:00 (HU-020)', () {
+    expect(isNight(DateTime(2026, 10, 30, 17, 59)), isFalse);
+    expect(isNight(DateTime(2026, 10, 30, 18)), isTrue);
+    expect(isNight(DateTime(2026, 10, 30, 5, 59)), isTrue);
+    expect(isNight(DateTime(2026, 10, 30, 6)), isFalse);
   });
 }
