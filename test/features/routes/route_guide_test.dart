@@ -882,6 +882,39 @@ void main() {
       expect(session.routeGuides.single, contains('crossing: zebra crossing'));
     });
 
+    test('de noche, el aviso de un cruce pide decir que con poca luz no ve '
+        'los colores; de día no (HU-020)', () async {
+      await connect();
+      await reliableAt(0);
+      await callTool('start_route');
+      live().checkRoute(); // torniquetes, de día
+      await settle();
+      expect(session.routeGuides.last, isNot(contains('It is night')));
+      now = DateTime(2026, 10, 24, 19, 30);
+      gps.fixes.add(_at(_step, at: t0.add(const Duration(seconds: 9))));
+      await settle();
+      live().checkRoute(); // árbol grande: el siguiente es la cebra
+      await settle();
+      expect(session.routeGuides.last, contains('crossing: zebra crossing'));
+      expect(session.routeGuides.last, contains('It is night'));
+    });
+
+    test('al llegar a un cruce vibra hacia la otra acera (HU-020)', () async {
+      await connect();
+      await reliableAt(0);
+      compass.events.add(const CompassReading(headingDeg: 0, accuracyDeg: 5));
+      await settle();
+      await callTool('start_route');
+      live().checkRoute(); // torniquetes: no es cruce
+      await settle();
+      expect(pulses, isEmpty);
+      gps.fixes.add(_at(_step, at: t0.add(const Duration(seconds: 9))));
+      await settle();
+      live().checkRoute(); // árbol grande, antes de la cebra
+      await settle();
+      expect(pulses, [1]); // la cebra queda al frente
+    });
+
     test('sin GPS confiable lo dice una vez y luego que volvió (HU-021, fase '
         '1)', () async {
       await connect();
@@ -1031,5 +1064,12 @@ void main() {
     expect([2, 3, 4].map(directionPulses), [2, 2, 2]);
     expect([8, 9, 10].map(directionPulses), [3, 3, 3]);
     expect([5, 6, 7, null].map(directionPulses), [0, 0, 0, 0]);
+  });
+
+  test('franja nocturna de 18:00 a 6:00 (HU-020)', () {
+    expect(isNight(DateTime(2026, 10, 30, 17, 59)), isFalse);
+    expect(isNight(DateTime(2026, 10, 30, 18)), isTrue);
+    expect(isNight(DateTime(2026, 10, 30, 5, 59)), isTrue);
+    expect(isNight(DateTime(2026, 10, 30, 6)), isFalse);
   });
 }

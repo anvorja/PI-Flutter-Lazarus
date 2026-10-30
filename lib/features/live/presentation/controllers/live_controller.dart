@@ -1094,6 +1094,10 @@ class LiveController extends Notifier<LiveUiState> {
   /// fase 1): se avisa otra vez solo cuando se recupera.
   bool _routeGpsLost = false;
 
+  /// Llegó a un cruce de la ruta: el ciclo de observación solo avisa riesgos
+  /// hasta [crossingQuietFor] después (HU-020).
+  DateTime? _crossingSince;
+
   /// Cuándo se perdió el GPS y si ya se sugirió pedir ayuda (HU-021, regla 5).
   DateTime? _routeGpsLostAt;
   bool _routeGpsHelpSent = false;
@@ -2385,7 +2389,10 @@ class LiveController extends Notifier<LiveUiState> {
     _lastActivity = now;
     // En pausa la app lo dice en el propio mensaje: el modelo no siempre
     // recuerda que se pausó a mitad de la sesión (CP-LAZA-107).
-    _session.sendObserve(risksOnly: !_settings.getDescribing());
+    final crossing = _crossingSince;
+    final crossingNow =
+        crossing != null && now.difference(crossing) < crossingQuietFor;
+    _session.sendObserve(risksOnly: !_settings.getDescribing() || crossingNow);
   }
 
   /// Cierra el `[OBSERVA]` en curso; si el asistente no habló, calló (correcto
@@ -2724,6 +2731,7 @@ class LiveController extends Notifier<LiveUiState> {
     _routeWatch = null;
     _routeGuide = null;
     _resetRouteGps();
+    _crossingSince = null;
     _pendingRouteDestination = null;
     _pendingRouteSince = null;
     _routeNotice = null;
@@ -2748,7 +2756,7 @@ class LiveController extends Notifier<LiveUiState> {
     if (fix == null) return;
     final event = guide.update(fix, location.reliability);
     if (event == null) return;
-    final message = describeRouteEvent(
+    var message = describeRouteEvent(
       event,
       fix,
       (p) => ref
@@ -2761,6 +2769,21 @@ class LiveController extends Notifier<LiveUiState> {
       return;
     }
     final point = event.point;
+    final now = ref.read(liveClockProvider)();
+    final atCrossing =
+        (event.kind == RouteEventKind.arrived ||
+            event.kind == RouteEventKind.rejoined) &&
+        (point.crossing != null || event.next?.crossing != null);
+    final nearCrossing =
+        atCrossing ||
+        (event.kind == RouteEventKind.approaching && point.crossing != null);
+    if (event.kind == RouteEventKind.arrived ||
+        event.kind == RouteEventKind.rejoined) {
+      _crossingSince = atCrossing ? now : null;
+    }
+    if (nearCrossing && isNight(now)) message = '$message$nightCrossingNote';
+    // Hacia la otra acera: la misma vibración direccional de HU-021.
+    if (atCrossing) _vibrateTowardsNext(guide);
     if (state.meetingMode &&
         point.crossing == null &&
         point.risk != RouteRisk.high) {

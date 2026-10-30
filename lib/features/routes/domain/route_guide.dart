@@ -20,6 +20,21 @@ const Duration routeGpsWait = Duration(minutes: 5);
 /// a una persona cercana o el SOS (HU-021, regla 5).
 const Duration routeGpsHelpAfter = Duration(minutes: 3);
 
+/// Tras llegar a un cruce, el ciclo de observación solo avisa riesgos durante
+/// este tiempo: mientras la persona cruza se habla lo mínimo (HU-020; Aira pide
+/// a sus intérpretes "remain as quiet as possible" en los cruces).
+const Duration crossingQuietFor = Duration(seconds: 90);
+
+/// Franja nocturna (HU-020, regla 5): de 18:00 a 6:00 la cámara ve peor los
+/// colores y el asistente lo dice antes de describir un semáforo.
+bool isNight(DateTime local) => local.hour >= 18 || local.hour < 6;
+
+/// Agregado al mensaje de un cruce en la franja nocturna.
+const String nightCrossingNote =
+    ' It is night: before describing the traffic light, say that with little '
+    'light you cannot see its colors well, and ask them to rely on the sound '
+    'of the traffic.';
+
 /// Pulsos de la vibración direccional para una hora de reloj (HU-021, regla
 /// 3): uno, recto (11 a 1); dos, a la derecha (2 a 4); tres, a la izquierda (8
 /// a 10). Hacia atrás o sin brújula, ninguno: la voz lo explica.
