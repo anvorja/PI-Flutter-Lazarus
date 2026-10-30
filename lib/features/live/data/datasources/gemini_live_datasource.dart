@@ -1,4 +1,5 @@
-/// Cliente de la Gemini Live API a través del proxy WebSocket del backend.
+/// Cliente de la Gemini Live API a través del proxy WebSocket del backend o,
+/// con un token efímero, directo con Gemini (HU-031).
 ///
 /// Conecta al
 /// backend (`/ws/live`), NO a Gemini directo: la API key vive server-side y el
@@ -75,6 +76,7 @@ class GeminiLiveClientOptions {
     this.screenReader = false,
     this.deviceToken,
     this.networkInfo,
+    this.directModel,
     this.onResponse,
     this.onOpen,
     this.onClose,
@@ -115,6 +117,11 @@ class GeminiLiveClientOptions {
   /// Operador y tipo de red, para comparar la latencia entre SIM y redes.
   final Future<Map<String, String>?> Function()? networkInfo;
 
+  /// Modelo de la sesión directa con un token efímero (HU-031): el primer
+  /// frame es el `setup` de Gemini en lugar de `start`, y la configuración
+  /// (prompt, funciones, voz) ya viene fijada en el token. `null` = proxy.
+  final String? directModel;
+
   final void Function(LiveResponse message)? onResponse;
   final void Function()? onOpen;
 
@@ -130,6 +137,12 @@ class GeminiLiveClient {
   WebSocketChannel? _channel;
   bool connected = false;
   bool _closedByApp = false;
+
+  GeminiLiveClientOptions get options => _opts;
+
+  /// Llegó al menos un mensaje (p. ej. `setupComplete`): la sesión abrió de
+  /// verdad. Una conexión directa que falla antes cae al proxy.
+  bool receivedAny = false;
 
   /// Ya se informó el fin de la conexión (error o cierre). Un fallo al conectar
   /// llega por el stream y por `ready`; se informa una sola vez.
@@ -149,6 +162,7 @@ class GeminiLiveClient {
     channel.stream.listen(
       (event) {
         // Primer mensaje recibido implica que el socket está abierto.
+        receivedAny = true;
         if (!connected) {
           connected = true;
           _opened();
@@ -161,7 +175,11 @@ class GeminiLiveClient {
         // Si la app cerró la sesión (Detener, cambio de voz…) no es un corte.
         if (_closedByApp || _ended) return;
         _ended = true;
-        _opts.onClose?.call(channel.closeCode);
+        _opts.onClose?.call(
+          _opts.directModel == null
+              ? channel.closeCode
+              : directCloseCode(channel.closeCode, channel.closeReason),
+        );
       },
       cancelOnError: true,
     );
@@ -189,6 +207,14 @@ class GeminiLiveClient {
 
   /// Envía `start` (con la red, si se conoce) y avisa que la sesión abrió.
   Future<void> _opened() async {
+    final model = _opts.directModel;
+    if (model != null) {
+      _send({
+        'setup': {'model': model},
+      });
+      _opts.onOpen?.call();
+      return;
+    }
     Map<String, String>? network;
     try {
       network = await _opts.networkInfo?.call();
@@ -332,4 +358,31 @@ class GeminiLiveClient {
       },
     });
   }
+}
+
+const _billingMarkers = [
+  'credits',
+  'billing',
+  'prepayment',
+  'payment',
+  'depleted',
+  'spending cap',
+];
+const _quotaMarkers = [
+  'quota',
+  'exhausted',
+  'resource_exhausted',
+  '429',
+  'rate limit',
+];
+
+/// Cierre de Gemini en una sesión directa → el código que daría el proxy
+/// (`_upstream_close_code` del backend): sin saldo 4005, sin cuota 4003, fin
+/// normal 4001 y cualquier otro 4002.
+int directCloseCode(int? code, String? reason) {
+  final text = (reason ?? '').toLowerCase();
+  if (_billingMarkers.any(text.contains)) return 4005;
+  if (_quotaMarkers.any(text.contains)) return 4003;
+  if (code == 1000 || code == 1001) return 4001;
+  return 4002;
 }
