@@ -16,6 +16,20 @@ const Duration routeCheckInterval = Duration(seconds: 2);
 /// Cuánto espera una ruta pedida sin GPS confiable antes de desistir.
 const Duration routeGpsWait = Duration(minutes: 5);
 
+/// Sin GPS confiable con la ruta activa, a los 3 minutos se sugiere pedir ayuda
+/// a una persona cercana o el SOS (HU-021, regla 5).
+const Duration routeGpsHelpAfter = Duration(minutes: 3);
+
+/// Pulsos de la vibración direccional para una hora de reloj (HU-021, regla
+/// 3): uno, recto (11 a 1); dos, a la derecha (2 a 4); tres, a la izquierda (8
+/// a 10). Hacia atrás o sin brújula, ninguno: la voz lo explica.
+int directionPulses(int? clock) => switch (clock) {
+  11 || 12 || 1 => 1,
+  2 || 3 || 4 => 2,
+  8 || 9 || 10 => 3,
+  _ => 0,
+};
+
 /// Hasta cuándo se repite un aviso de ruta que se cortó al cambiar de sesión
 /// (LAZA-127). Una sesión nueva tarda de 2 a 12 s en abrir; pasado este
 /// tiempo, la persona ya siguió caminando y el aviso no corresponde.
