@@ -93,7 +93,12 @@ void main() {
     r.disconnect();
     await connect(r);
     expect(requests, hasLength(1));
-    now = now.add(directRetryAfter + const Duration(seconds: 1));
+    // Las sesiones en espera no alargan la espera.
+    now = now.add(directRetryAfter - const Duration(minutes: 1));
+    r.disconnect();
+    await connect(r);
+    expect(requests, hasLength(1));
+    now = now.add(const Duration(minutes: 1, seconds: 1));
     r.disconnect();
     await connect(r);
     expect(requests, hasLength(2));

@@ -170,7 +170,11 @@ class LiveSessionRepositoryImpl implements LiveSessionRepository {
     Future<void> run() async {
       LiveTokenResult? token;
       final blocked = _directBlockedUntil;
-      if (blocked == null || _clock().isAfter(blocked)) {
+      final askToken = blocked == null || _clock().isAfter(blocked);
+      if (!askToken) {
+        liveLog('[Lazarus] conexión por el proxy (directa en espera)');
+      }
+      if (askToken) {
         Map<String, String>? network;
         try {
           network = await readNetworkInfo();
@@ -204,8 +208,14 @@ class LiveSessionRepositoryImpl implements LiveSessionRepository {
           _client = open(direct: token);
         case null:
           // Sin conexión directa en el backend (o sin respuesta): el proxy, y no
-          // se vuelve a preguntar en un rato para no sumar la espera.
-          _directBlockedUntil = _clock().add(directRetryAfter);
+          // se vuelve a preguntar en un rato para no sumar la espera. La espera
+          // cuenta desde la última pregunta, no desde cada sesión.
+          if (askToken) {
+            liveLog(
+              '[Lazarus] conexión directa no disponible: se usa el proxy',
+            );
+            _directBlockedUntil = _clock().add(directRetryAfter);
+          }
           _client = open();
       }
       _client!.connect();
