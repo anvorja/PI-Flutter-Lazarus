@@ -872,5 +872,71 @@ void main() {
       await settle();
       expect(session.routeGuides.single, contains('crossing: zebra crossing'));
     });
+
+    test('sin GPS confiable lo dice una vez y luego que volvió (HU-021, fase '
+        '1)', () async {
+      await connect();
+      await reliableAt(0);
+      await callTool('start_route');
+      live().checkRoute(); // torniquetes
+      await settle();
+      for (final s in [9, 15, 21]) {
+        gps.fixes.add(
+          _at(_step, accuracy: 40, at: t0.add(Duration(seconds: s))),
+        );
+      }
+      await settle();
+      live().checkRoute();
+      await settle();
+      expect(session.routeGuides.last, startsWith('gps lost:'));
+      expect(session.routeGuides.last, contains('Never say which point'));
+      expect(session.routeGuides.last, contains('camera'));
+      live().checkRoute(); // sigue sin GPS: no se repite
+      await settle();
+      expect(session.routeGuides, hasLength(2));
+      expect(logs, contains('[Lazarus] ruta: GPS no confiable (±40 m)'));
+
+      for (final s in [24, 27, 30]) {
+        gps.fixes.add(_at(_step, at: t0.add(Duration(seconds: s))));
+      }
+      await settle();
+      live().checkRoute();
+      await settle();
+      expect(
+        session.routeGuides.last,
+        startsWith('gps back: the GPS is reliable again'),
+      );
+      expect(
+        session.routeGuides.last,
+        contains("Next: point 2 of 4, 'Árbol grande'"),
+      );
+      live().checkRoute();
+      await settle();
+      expect(
+        session.routeGuides.last,
+        startsWith("reached point 2 of 4: 'Árbol grande'"),
+      );
+    });
+
+    test('una sesión nueva sin GPS confiable recuerda que no afirme el punto '
+        '(HU-021)', () async {
+      await connect();
+      await reliableAt(0);
+      await callTool('start_route');
+      for (final s in [9, 15, 21]) {
+        gps.fixes.add(_at(0, accuracy: 40, at: t0.add(Duration(seconds: s))));
+      }
+      await settle();
+      live().checkRoute();
+      await settle();
+      expect(session.routeGuides.last, startsWith('gps lost:'));
+      now = t0.add(const Duration(minutes: 1));
+      session.emitError();
+      await settle();
+      session.emitSetupComplete();
+      await settle();
+      expect(session.routeGuides.last, startsWith('still guiding:'));
+      expect(session.routeGuides.last, contains('gps lost:'));
+    });
   });
 }

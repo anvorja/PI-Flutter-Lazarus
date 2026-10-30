@@ -28,6 +28,8 @@ import '../../../field_notes/domain/entities/field_note.dart';
 import '../../../field_notes/presentation/providers/field_notes_providers.dart';
 import '../../../location/domain/entities/location_fix.dart';
 import '../../../location/presentation/providers/location_providers.dart';
+import '../../../location/presentation/controllers/location_controller.dart'
+    show LocationState;
 import '../../../routes/domain/route_guide.dart';
 import '../../../routes/domain/route_profile.dart';
 import '../../../routes/domain/unicentro_schedule.dart';
@@ -1087,6 +1089,10 @@ class LiveController extends Notifier<LiveUiState> {
   /// cuanto el GPS lo sea, hasta [routeGpsWait] después del pedido.
   String? _pendingRouteDestination;
   DateTime? _pendingRouteSince;
+
+  /// Con una ruta activa, el GPS dejó de ser confiable y ya se avisó (HU-021,
+  /// fase 1): se avisa otra vez solo cuando se recupera.
+  bool _routeGpsLost = false;
 
   /// El último aviso de ruta, hasta que termina de sonar (LAZA-127). Si la
   /// sesión cambia antes, se repite en la siguiente mientras siga vigente.
@@ -2688,6 +2694,7 @@ class LiveController extends Notifier<LiveUiState> {
     if (route == null) return null;
     final startAt = nearestPointIndex(route, fix);
     _routeGuide = RouteGuide(route, startAt: startAt);
+    _routeGpsLost = false;
     final total = route.points.length;
     _log(
       '[Lazarus] ruta: iniciada "${route.slug}" ($total puntos, '
@@ -2712,6 +2719,7 @@ class LiveController extends Notifier<LiveUiState> {
     _routeWatch?.cancel();
     _routeWatch = null;
     _routeGuide = null;
+    _routeGpsLost = false;
     _pendingRouteDestination = null;
     _pendingRouteSince = null;
     _routeNotice = null;
@@ -2731,6 +2739,7 @@ class LiveController extends Notifier<LiveUiState> {
     final guide = _routeGuide;
     if (guide == null) return;
     final location = ref.read(locationControllerProvider);
+    if (_routeGpsChanged(guide, location)) return;
     final fix = location.fix;
     if (fix == null) return;
     final event = guide.update(fix, location.reliability);
@@ -2758,6 +2767,52 @@ class LiveController extends Notifier<LiveUiState> {
     _sendRoute(message);
   }
 
+  /// HU-021, fase 1: sin GPS confiable la guía calla los puntos. El asistente
+  /// lo dice una vez, sigue con la cámara sin afirmar en qué punto va, y avisa
+  /// cuando el GPS vuelve. También en modo reunión: cambia lo que puede decir.
+  bool _routeGpsChanged(RouteGuide guide, LocationState location) {
+    final reliability = location.reliability;
+    if (!_routeGpsLost && reliability == GpsReliability.unreliable) {
+      _routeGpsLost = true;
+      final accuracy = location.fix?.accuracyM;
+      _log(
+        '[Lazarus] ruta: GPS no confiable'
+        '${accuracy == null ? '' : ' (±${accuracy.toStringAsFixed(0)} m)'}',
+      );
+      _sendRoute(_routeGpsLostMessage(guide));
+      return true;
+    }
+    if (_routeGpsLost && reliability == GpsReliability.reliable) {
+      _routeGpsLost = false;
+      _log('[Lazarus] ruta: GPS confiable otra vez');
+      final next = guide.nextPoint;
+      _sendRoute(
+        'gps back: the GPS is reliable again and the app goes on with the '
+        "point notices of '${guide.profile.name}'"
+        '${next == null ? '' : ". Next: point ${guide.nextIndex + 1} of ${guide.profile.points.length}, '${next.name}'"}. '
+        'Tell the person in one short sentence that you have the GPS again '
+        'and the guidance goes on.',
+      );
+      return true;
+    }
+    return false;
+  }
+
+  String _routeGpsLostMessage(RouteGuide guide) {
+    final seeing = _canSee
+        ? 'Tell the person once, in one short sentence, that you lost the GPS '
+              'and keep helping with the camera. Until the GPS is back, guide '
+              'only with what you see (signs, stores, stairs, doors) and their '
+              'steps.'
+        : 'The camera is paused: tell the person once, in one short sentence, '
+              'that you lost the GPS and cannot see, and that they should go on '
+              'carefully or ask someone nearby.';
+    return "gps lost: the GPS is not reliable here, so the app pauses the point "
+        "notices of '${guide.profile.name}' until it recovers. $seeing Never "
+        'say which point they are at, how far it is or where they are; if they '
+        'ask, say you are not sure.';
+  }
+
   void _sendRouteGoesOn() {
     final guide = _routeGuide!;
     final total = guide.profile.points.length;
@@ -2768,7 +2823,8 @@ class LiveController extends Notifier<LiveUiState> {
       '${next == null ? '' : ". Next: point ${guide.nextIndex + 1} of $total, '${next.name}'"}. '
       'Tell the person in one short sentence that the route guidance goes on. '
       "The app will keep sending '[RUTA]' at each point: do not describe the "
-      'route yourself.',
+      'route yourself.'
+      '${_routeGpsLost ? ' ${_routeGpsLostMessage(guide)}' : ''}',
     );
   }
 
