@@ -5,11 +5,13 @@ library;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+import '../../data/repositories/accelerometer_step_counter.dart';
 import '../../data/repositories/compass_repository_impl.dart';
 import '../../data/repositories/csv_track_recorder.dart';
 import '../../data/repositories/location_repository_impl.dart';
 import '../../domain/repositories/compass_repository.dart';
 import '../../domain/repositories/location_repository.dart';
+import '../../domain/repositories/step_counter.dart';
 import '../../domain/repositories/track_recorder.dart';
 import '../controllers/location_controller.dart';
 import '../../../../core/debug/field_evidence.dart';
@@ -21,6 +23,11 @@ final locationRepositoryProvider = Provider<LocationRepository>(
 /// Brújula del teléfono (HU-016).
 final compassRepositoryProvider = Provider<CompassRepository>(
   (ref) => CompassRepositoryImpl(),
+);
+
+/// Pasos con el acelerómetro, para guiar sin GPS (HU-021).
+final stepCounterProvider = Provider<StepCounter>(
+  (ref) => AccelerometerStepCounter(),
 );
 
 /// Registro del recorrido en CSV: solo con evidencia de campo (depuración y

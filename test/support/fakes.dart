@@ -19,6 +19,7 @@ import 'package:app/features/location/domain/entities/heading.dart';
 import 'package:app/features/location/domain/entities/location_fix.dart';
 import 'package:app/features/location/domain/repositories/compass_repository.dart';
 import 'package:app/features/location/domain/repositories/location_repository.dart';
+import 'package:app/features/location/domain/repositories/step_counter.dart';
 import 'package:app/features/location/domain/repositories/track_recorder.dart';
 
 class FakeLiveSessionRepository implements LiveSessionRepository {
@@ -286,6 +287,22 @@ class FakeNoteRecorder implements NoteRecorder {
     if (enabled) notes.add(note);
     return enabled;
   }
+}
+
+/// Contador de pasos controlable desde la prueba.
+class FakeStepCounter implements StepCounter {
+  @override
+  int steps = 0;
+  bool running = false;
+
+  @override
+  void start() {
+    steps = 0;
+    running = true;
+  }
+
+  @override
+  void stop() => running = false;
 }
 
 /// Brújula falsa: las pruebas empujan lecturas.

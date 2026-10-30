@@ -94,6 +94,18 @@ const _ttsLocales = {
   'it': 'it-IT',
 };
 
+/// Vibración direccional (HU-021, regla 3): un pulso, seguir recto; dos,
+/// girar a la derecha; tres, girar a la izquierda. Acompaña a la voz, no la
+/// reemplaza. En pruebas se sustituye por un fake que la registra.
+final hapticPulsesProvider = Provider<Future<void> Function(int count)>(
+  (ref) => (count) async {
+    for (var i = 0; i < count; i++) {
+      if (i > 0) await Future<void>.delayed(const Duration(milliseconds: 280));
+      await HapticFeedback.heavyImpact();
+    }
+  },
+);
+
 /// Aviso hablado para la persona usuaria cuando no hay asistente que hable (p. ej.
 /// sin conexión con el backend), acompañado de una vibración. Con TalkBack activo
 /// lo lee el lector de pantalla; sin él, la síntesis de voz del teléfono, para que
